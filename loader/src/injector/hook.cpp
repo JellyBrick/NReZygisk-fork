@@ -15,6 +15,7 @@
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <mntent.h>
 
 #include <unistd.h>
 #include <pthread.h>
@@ -734,6 +735,12 @@ void ZygiskContext::app_specialize_pre() {
           flags[DO_REVERT_UNMOUNT] = true;
 
           update_mnt_ns(Clean, false);
+        }
+
+        FILE* fp = setmntent("/proc/mounts", "r");
+        if (fp) {
+            while (getmntent(fp));
+            endmntent(fp);
         }
 
         /* INFO: Executed after setns to ensure a module can update the mounts of an 
