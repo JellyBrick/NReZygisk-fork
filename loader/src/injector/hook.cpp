@@ -975,11 +975,15 @@ static void hook_unloader() {
 }
 
 static void unhook_functions() {
+    // Unhook plt_hook
+    for (const auto &[dev, inode, sym, old_func] : *plt_hook_list) {
+        if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr)) {
+            LOGE("Failed to register plt_hook [%s]", sym);
+        }
+    }
     delete plt_hook_list;
-
-    if (!lsplt::Restore()) {
+    if (!hook_commit()) {
         LOGE("Failed to restore plt_hook");
-
         should_unmap_zygisk = false;
     }
 }
