@@ -256,6 +256,22 @@ DCL_HOOK_FUNC(char *, strdup, const char *s) {
     return old_strdup(s);
 }
 
+/*
+ * INFO: Our goal is to get called after libart.so is loaded, but before ART actually starts running.
+ * If we are too early, we won't find libart.so in maps, and if we are too late, we could make other
+ * threads crash if they try to use the PLT while we are in the process of hooking it.
+ * For this task, hooking property_get was chosen as there are lots of calls to this, so it's
+ * relatively unlikely to break.
+ *
+ * The line where libart.so is loaded is:
+ * https://github.com/aosp-mirror/platform_frameworks_base/blob/1cdfff555f4a21f71ccc978290e2e212e2f8b168/core/jni/AndroidRuntime.cpp#L1266
+ *
+ * And shortly after that, in the startVm method that is called right after, there are many calls to property_get:
+ * https://github.com/aosp-mirror/platform_frameworks_base/blob/1cdfff555f4a21f71ccc978290e2e212e2f8b168/core/jni/AndroidRuntime.cpp#L791
+ *
+ * After we succeed in getting called at a point where libart.so is already loaded, we will ignore
+ * the rest of the property_get calls.
+ */
 DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *default_value) {
     hook_unloader();
     return old_property_get(key, value, default_value);
@@ -687,7 +703,19 @@ void ZygiskContext::run_modules_post() {
 
     if (modules.size() > 0) {
         LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
-        clean_trace("/data/adb", modules.size(), modules_unloaded, true);
+
+        /* INFO: While Variable Length Arrays (VLAs) aren't usually
+                   recommended due to the ease of using too much of the
+                   stack, this should be fine since it should not be
+                   possible to exhaust the stack with only a few addresses. */
+        void *module_addrs[modules.size() * sizeof(void *)];
+
+        size_t i = 0;
+        for (const auto &m : modules) {
+            module_addrs[i++] = m.getHandle();
+        }
+
+        clean_trace("/data/adb", module_addrs, modules.size(), modules.size(), modules_unloaded, false);
     }
 }
 
@@ -743,7 +771,7 @@ void ZygiskContext::app_specialize_pre() {
             endmntent(fp);
         }
 
-        /* INFO: Executed after setns to ensure a module can update the mounts of an 
+        /* INFO: Executed after setns to ensure a module can update the mounts of an
                    application without worrying about it being overwritten by setns.
         */
         run_modules_pre();
@@ -883,19 +911,35 @@ static void hook_register(dev_t dev, ino_t inode, const char *symbol, void *new_
 #define PLT_HOOK_REGISTER(DEV, INODE, NAME) \
     PLT_HOOK_REGISTER_SYM(DEV, INODE, #NAME, NAME)
 
-void clean_trace(const char* path, size_t load, size_t unload, bool spoof_maps) {
+/* INFO: module_addrs_length is always the same as "load" */
+void clean_trace(const char *path, void **module_addrs, size_t module_addrs_length, size_t load, size_t unload, bool spoof_maps) {
     LOGD("cleaning trace for path %s", path);
 
     if (load > 0 || unload > 0) solist_reset_counters(load, unload);
 
     LOGD("Dropping solist record for %s", path);
 
-    bool path_found = solist_drop_so_path(path);
-    if (!path_found || !spoof_maps) return;
+    bool any_dropped = false;
+    for (size_t i = 0; i < module_addrs_length; i++) {
+        bool local_any_dropped = solist_drop_so_path(module_addrs[i]);
+        if (!local_any_dropped) continue;
+
+        any_dropped = true;
+
+        LOGD("Dropped solist record for %p", module_addrs[i]);
+    }
+
+    if (!any_dropped || !spoof_maps) return;
 
     LOGD("spoofing virtual maps for %s", path);
-    // spoofing map names is futile in Android, we do it simply
-    // to avoid Zygisk detections based on string comparison
+
+    /* INFO: Spoofing maps names is futile, after all it will
+               still show up in /proc/self/(s)maps but with a
+               different name, however still detectable by
+               checking the permissions. This, however, avoids
+               just checking for "zygisk". */
+
+    /* TODO: Use SoList to map through libraries to avoid open /proc/self/maps here */
     for (auto &map : lsplt::MapInfo::Scan()) {
         if (strstr(map.path.c_str(), path) && strstr(map.path.c_str(), "libzygisk") == 0)
         {
@@ -964,8 +1008,16 @@ static void hook_unloader() {
     }
 
     if (art_dev == 0 || art_inode == 0) {
+        /*
+         * INFO: If we are here, it means we are too early and libart.so hasn't loaded yet when
+         * property_get was called. This doesn't normally happen, but we try again next time
+         * just to be safe.
+         */
+
         LOGE("virtual map for libart.so is not cached");
+
         hooked_unloader = false;
+
         return;
     } else {
         LOGD("hook_unloader called with libart.so [%zu:%lu]", art_dev, art_inode);

@@ -48,7 +48,7 @@ enum Architecture {
 #define ZYGISKD_PATH "/data/adb/modules/rezygisk/bin/zygiskd" lp_select("32", "64")
 
 static enum Architecture get_arch(void) {
-  char system_arch[32];
+  char system_arch[64];
   get_property("ro.product.cpu.abilist", system_arch);
 
   if (strstr(system_arch, "arm") != NULL) return lp_select(ARM32, ARM64);
@@ -130,6 +130,8 @@ static void load_modules(enum Architecture arch, struct Context *restrict contex
     context->modules[context->len].companion = -1;
     context->len++;
   }
+
+  closedir(dir);
 }
 
 static void free_modules(struct Context *restrict context) {
