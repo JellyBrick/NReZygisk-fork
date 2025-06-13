@@ -412,7 +412,7 @@ uintptr_t remote_call(int pid, struct user_regs_struct *regs, uintptr_t func_add
       long remain = (args_size - 6L) * sizeof(long);
       align_stack(regs, remain);
 
-      if (!write_proc(pid, (uintptr_t) regs->REG_SP, args, remain)) LOGE("failed to push arguments");
+      if (!write_proc(pid, (uintptr_t) regs->REG_SP, args + 6, remain)) LOGE("failed to push arguments");
     }
 
     regs->REG_SP -= sizeof(long);
@@ -442,7 +442,7 @@ uintptr_t remote_call(int pid, struct user_regs_struct *regs, uintptr_t func_add
       long remain = (args_size - 8) * sizeof(long);
       align_stack(regs, remain);
 
-      write_proc(pid, (uintptr_t)regs->REG_SP, args, remain);
+      write_proc(pid, (uintptr_t)regs->REG_SP, args + 8, remain);
     }
 
     regs->regs[30] = return_addr;
@@ -456,7 +456,7 @@ uintptr_t remote_call(int pid, struct user_regs_struct *regs, uintptr_t func_add
       long remain = (args_size - 4) * sizeof(long);
       align_stack(regs, remain);
 
-      write_proc(pid, (uintptr_t)regs->REG_SP, args, remain);
+      write_proc(pid, (uintptr_t)regs->REG_SP, args + 4, remain);
     }
 
     regs->uregs[14] = return_addr;
@@ -488,7 +488,9 @@ uintptr_t remote_call(int pid, struct user_regs_struct *regs, uintptr_t func_add
     return 0;
   }
 
-  if (WSTOPSIG(status) == SIGSEGV) {
+  if (WIFSTOPPED(status) && (status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXEC << 8)))) {
+    return (uintptr_t) &execve;
+  } else if (WSTOPSIG(status) == SIGSEGV) {
     if ((uintptr_t)regs->REG_IP != return_addr) {
       LOGE("wrong return addr %p", (void *) regs->REG_IP);
 
@@ -539,6 +541,9 @@ void wait_for_trace(int pid, int *status, int flags) {
       LOGE("process %d not stopped for trace: %s, exit", pid, status_str);
 
       exit(1);
+    } else if (WSTOPSIG(*status) == SIGCHLD) {
+      ptrace(PTRACE_CONT, pid, 0, (void*) SIGCHLD);
+      continue;
     }
 
     return;

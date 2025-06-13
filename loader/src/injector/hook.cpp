@@ -6,6 +6,9 @@
 #include <map>
 #include <array>
 #include <vector>
+#include <string>
+#include <fstream>
+#include <sstream>
 
 #include <lsplt.hpp>
 
@@ -15,6 +18,9 @@
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/sysmacros.h>
 #include <mntent.h>
 
 #include <unistd.h>
@@ -33,6 +39,7 @@ using namespace std;
 
 static void hook_unloader();
 static void unhook_functions();
+static void do_umounts();
 
 namespace {
 
@@ -45,6 +52,12 @@ enum {
     SKIP_FD_SANITIZATION,
 
     FLAG_MAX
+};
+
+enum mns_stages {
+    MNS_INIT,
+    MNS_MID,
+    MNS_APP
 };
 
 #define DCL_PRE_POST(name) \
@@ -111,6 +124,9 @@ struct ZygiskContext {
     void sanitize_fds();
     bool exempt_fd(int fd);
     bool is_child() const { return pid <= 0; }
+    bool is_mounted() const {
+        return (info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) || !(flags[DO_REVERT_UNMOUNT]);
+    }
 
     // Compatibility shim
     void plt_hook_register(const char *regex, const char *symbol, void *fn, void **backup);
@@ -128,6 +144,8 @@ map<string, vector<JNINativeMethod>> *jni_hook_list;
 bool should_unmap_zygisk = false;
 bool enable_unloader = false;
 bool hooked_unloader = false;
+bool clean_zygote = false;
+enum mns_stages mns_stage = MNS_INIT;
 std::vector<lsplt::MapInfo> cached_map_infos = {};
 
 } // namespace
@@ -178,8 +196,83 @@ bool update_mnt_ns(enum mount_namespace_state mns_state, bool dry_run) {
     return true;
 }
 
-// Unmount stuffs in the process's private mount namespace
+pid_t fork_create(int *socket) {
+    int sockets[2] = {-1, -1};
+    if (socket) {
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == -1) {
+            PLOGE("fork_create: socketpair");
+            *socket = -1;
+            return -1;
+        }
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (socket) {
+            close(sockets[0]);
+            *socket = sockets[1];
+        }
+        return pid;
+    }
+    if (socket) {
+        close(sockets[1]);
+        *socket = sockets[0];
+    }
+    if (pid < 0) {
+        PLOGE("fork_create: fork");
+        if (socket) {
+            close(sockets[0]);
+            *socket = -1;
+        }
+        return pid;
+    }
+    return pid;
+}
+
+void fork_wait(pid_t pid) {
+    if (pid <= 0) {
+        LOGE("fork_wait: illegal pid %d", pid);
+        return;
+    }
+    int status;
+    errno = 0;
+    while (true) {
+        pid_t w = waitpid(pid, &status, 0);
+        if (w == -1) {
+            if (errno == EINTR) {
+                errno = 0;
+                continue;
+            } else {
+                PLOGE("fork_wait: waitpid");
+            }
+        } else if (w != pid) {
+            PLOGE("fork_wait: pid %d, wait result %d", pid, w);
+            continue;
+        }
+        return;
+    }
+}
+
+bool fork_and_wait() {
+    pid_t pid = fork_create(nullptr);
+    if (pid == 0) return true;
+    fork_wait(pid);
+    return false;
+}
+
+// Mount stuffs in the process's private mount namespace
 DCL_HOOK_FUNC(int, unshare, int flags) {
+    if (clean_zygote && (flags & CLONE_NEWNS) != 0) {
+        if (g_ctx) {
+            mns_stage = MNS_APP;
+        } else if (mns_stage == MNS_INIT) {
+            do_umounts();
+            mns_stage = MNS_MID;
+            flags &= ~CLONE_NEWNS;
+            if (!flags) return 0;
+        }
+        return old_unshare(flags);
+    }
+
     int res = old_unshare(flags);
     if (g_ctx && (flags & CLONE_NEWNS) != 0 && res == 0 &&
         // For some unknown reason, unmounting app_process in SysUI can break.
@@ -199,7 +292,7 @@ DCL_HOOK_FUNC(int, unshare, int flags) {
                    are also expected to have AP/KSU mounts there, so we will follow the
                    same idea by not umounting any mount. */
 
-        if (g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT) || !(g_ctx->flags[DO_REVERT_UNMOUNT])) {
+        if (g_ctx->is_mounted()) {
             update_mnt_ns(Mounted, false);
         }
 
@@ -210,6 +303,38 @@ DCL_HOOK_FUNC(int, unshare, int flags) {
     errno = 0;
 
     return res;
+}
+
+DCL_HOOK_FUNC(int, mount, const char *source, const char *target, const char *fs_type, unsigned long flags, const void *data) {
+    int ret = old_mount(source, target, fs_type, flags, data);
+    if (!clean_zygote || mns_stage != MNS_MID || ret != 0) {
+        return ret;
+    }
+    if (fork_and_wait()) {
+        if (!update_mnt_ns(Mounted, false)) {
+            PLOGE("mount hook: update_mnt_ns");
+        } else if (old_mount(source, target, fs_type, flags, data) != 0) {
+            PLOGE("mount hook: old_mount");
+        }
+        _exit(0);
+    }
+    return ret;
+}
+
+DCL_HOOK_FUNC(int, umount2, const char *target, int flags) {
+    int ret = old_umount2(target, flags);
+    if (!clean_zygote || mns_stage != MNS_MID || ret != 0) {
+        return ret;
+    }
+    if (fork_and_wait()) {
+        if (!update_mnt_ns(Mounted, false)) {
+            PLOGE("umount2 hook: update_mnt_ns");
+        } else if (old_umount2(target, flags) != 0) {
+            PLOGE("umount2 hook: old_umount2");
+        }
+        _exit(0);
+    }
+    return ret;
 }
 
 // We cannot directly call `dlclose` to unload ourselves, otherwise when `dlclose` returns,
@@ -645,12 +770,89 @@ void ZygiskContext::fork_post() {
     g_ctx = nullptr;
 }
 
+void send_fd(int socket, int fd_to_send) {
+    struct msghdr msg = {};
+    char buf[CMSG_SPACE(sizeof(fd_to_send))] = {0};
+    struct iovec io = {.iov_base = (void *) "FD", .iov_len = 2};
+
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+    msg.msg_control = buf;
+    msg.msg_controllen = sizeof(buf);
+
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(fd_to_send));
+
+    memcpy(CMSG_DATA(cmsg), &fd_to_send, sizeof(fd_to_send));
+
+    if (TEMP_FAILURE_RETRY(sendmsg(socket, &msg, 0)) == -1) {
+        PLOGE("send_fd: sendmsg");
+    }
+}
+
+int recv_fd(int socket) {
+    struct msghdr msg = {};
+    char m_buffer[256];
+    struct iovec io = {.iov_base = m_buffer, .iov_len = sizeof(m_buffer)};
+    char c_buffer[CMSG_SPACE(sizeof(int))] = {0};
+
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+    msg.msg_control = c_buffer;
+    msg.msg_controllen = sizeof(c_buffer);
+
+    ssize_t n = TEMP_FAILURE_RETRY(recvmsg(socket, &msg, 0));
+    if (n == 0) {
+        LOGE("recv_fd: unexpected EOF");
+        return -1;
+    }
+    if (n == -1) {
+        PLOGE("recv_fd: recvmsg");
+        return -1;
+    }
+
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg || cmsg->cmsg_type != SCM_RIGHTS) {
+        LOGE("recv_fd: no fd received");
+        return -1;
+    }
+
+    int fd;
+    memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
+    return fd;
+}
+
 bool ZygiskContext::load_modules_only() {
   struct zygisk_modules ms;
   if (rezygiskd_read_modules(&ms) == false) {
     LOGE("Failed to read modules from zygiskd");
 
     return false;
+  }
+
+
+  int socket = -1;
+  pid_t fork_pid = -1;
+  if (clean_zygote) {
+      if (!is_mounted()) {
+          if ((fork_pid = fork_create(&socket)) == 0) {
+              int my_ns = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
+              if (my_ns == -1) {
+                  PLOGE("load_modules_only: open(/proc/self/ns/mnt)");
+              } else {
+                  send_fd(socket, my_ns);
+                  do_umounts();
+                  TEMP_FAILURE_RETRY(read(socket, &fork_pid, 1));
+              }
+              _exit(0);
+          } else if (fork_pid < 0) {
+              PLOGE("load_modules_only: fork");
+              return false;
+          }
+      }
+      update_mnt_ns(Mounted, false);
   }
 
   for (size_t i = 0; i < ms.modules_count; i++) {
@@ -676,6 +878,20 @@ bool ZygiskContext::load_modules_only() {
   }
 
   free_modules(&ms);
+
+  if (socket > 0) {
+      int clean_ns = recv_fd(socket);
+      if (clean_ns <= 0) {
+          PLOGE("load_modules_only: clean_ns = recv_fd(socket)");
+      } else {
+          if (setns(clean_ns, CLONE_NEWNS) == -1) {
+              PLOGE("load_modules_only: setns(clean_ns [%d], CLONE_NEWNS)", clean_ns);
+          }
+          close(clean_ns);
+      }
+      close(socket);
+      fork_wait(fork_pid);
+  }
 
   return true;
 }
@@ -730,7 +946,9 @@ void ZygiskContext::app_specialize_pre() {
                    before it even does something, so that it will be clean yet
                    with expected mounts.
         */
-        update_mnt_ns(Clean, true);
+        if (!clean_zygote) {
+            update_mnt_ns(Clean, true);
+        }
     }
 
     if ((info_flags & (PROCESS_IS_MANAGER | PROCESS_ROOT_IS_MAGISK)) == (PROCESS_IS_MANAGER | PROCESS_ROOT_IS_MAGISK)) {
@@ -744,6 +962,10 @@ void ZygiskContext::app_specialize_pre() {
                    identify Zygisk, being it not built-in, as working, we also set it. */
         setenv("ZYGISK_ENABLED", "1", 1);
     } else {
+        if ((info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST) {
+            flags[DO_REVERT_UNMOUNT] = true;
+        }
+
         /* INFO: Because we load directly from the file, we need to do it before we umount
                    the mounts, or else it won't have access to /data/adb anymore.
         */
@@ -760,15 +982,16 @@ void ZygiskContext::app_specialize_pre() {
                    executing the modules preSpecialize.
         */
         if ((info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST) {
-          flags[DO_REVERT_UNMOUNT] = true;
-
-          update_mnt_ns(Clean, false);
+          if (!clean_zygote) update_mnt_ns(Clean, false);
         }
 
-        FILE* fp = setmntent("/proc/mounts", "r");
-        if (fp) {
-            while (getmntent(fp));
-            endmntent(fp);
+
+        if (!clean_zygote) {
+            FILE *fp = setmntent("/proc/mounts", "r");
+            if (fp) {
+                while (getmntent(fp));
+                endmntent(fp);
+            }
         }
 
         /* INFO: Executed after setns to ensure a module can update the mounts of an
@@ -961,6 +1184,209 @@ void clean_trace(const char *path, void **module_addrs, size_t module_addrs_leng
     }
 }
 
+static bool set_exec_con(const char *con) {
+    FILE *fp = fopen("/proc/self/attr/exec", "w");
+    if (!fp) {
+        PLOGE("set_exec_con: fopen exec");
+        return false;
+    }
+    size_t len = strlen(con);
+    size_t written;
+    if ((written = fwrite(con, 1, len, fp)) != len) {
+        PLOGE("set_exec_con: fwrite exec (actual %d, expected %d)", (int) written, (int) len);
+        fclose(fp);
+        return false;
+    }
+    fclose(fp);
+    return true;
+}
+
+static std::string modules_dev;
+static bool is_after_reexec = false;
+
+static std::string path_dev_str(const char *path) {
+    struct stat st = {};
+
+    if (stat(path, &st) != 0) {
+        PLOGE("path_dev_str: stat(%s)", path);
+        return "?";
+    }
+
+    std::ostringstream oss;
+    oss << major(st.st_dev) << ":" << minor(st.st_dev);
+    return oss.str();
+}
+
+static void init_modules_dev() {
+    if (!modules_dev.empty()) return;
+
+    int clean_ns = -1;
+    if (is_after_reexec) {
+        clean_ns = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
+        if (clean_ns == -1) {
+            PLOGE("init_modules_dev: open(/proc/self/ns/mnt)");
+            return;
+        }
+        update_mnt_ns(Mounted, false);
+    }
+
+    std::string root_dev = path_dev_str("/");
+    std::string data_dev = path_dev_str("/data");
+    std::string mod_dev = path_dev_str("/data/adb/modules");
+
+    if (mod_dev != root_dev && mod_dev != data_dev) {
+        modules_dev = mod_dev;
+    } else {
+        modules_dev = "- no separate device -";
+    }
+
+    if (is_after_reexec) {
+        if (setns(clean_ns, CLONE_NEWNS) == -1) {
+            PLOGE("init_modules_dev: setns(clean_ns)");
+        }
+        close(clean_ns);
+    }
+}
+
+void clean_mounts(char **argv, char **envp) {
+    if (!argv && !envp) {
+        /* INFO: If argv is null, it means that we are past re-exec (see ptracer.c is_first) */
+        /* INFO: Re-exec only happens in clean_zygote mode so we should assume it to be active */
+        clean_zygote = true;
+        is_after_reexec = true;
+        init_modules_dev();
+        return;
+    }
+
+    if (!argv || !envp) {
+        PLOGE("clean_mounts: argv = %p, envp = %p", argv, envp);
+    }
+
+    clean_zygote = access(TMP_PATH "/clean_zygote", F_OK) == 0;
+    if (!clean_zygote) {
+        LOGE("clean_mounts: clean_zygote is not active");
+        return;
+    }
+
+    LOGD("clean_mounts: cleaning mounts");
+
+    int orig_ns = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
+    if (orig_ns == -1) {
+        PLOGE("clean_mounts: orig_ns = open(/proc/self/ns/mnt) orig");
+        return;
+    }
+
+    if (unshare(CLONE_NEWNS) == -1) {
+        PLOGE("clean_mounts: unshare(CLONE_NEWNS) for clean");
+        close(orig_ns);
+        return;
+    }
+
+    if (mount(nullptr, "/", nullptr, MS_REC | MS_SLAVE, nullptr) == -1) {
+        PLOGE("clean_mounts: mount(/, MS_REC | MS_SLAVE) for clean");
+        close(orig_ns);
+        return;
+    }
+
+    do_umounts();
+
+    int clean_ns = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
+    if (clean_ns == -1) {
+        PLOGE("clean_mounts: clean_ns = open(/proc/self/ns/mnt)");
+        close(orig_ns);
+        return;
+    }
+
+    if (setns(orig_ns, CLONE_NEWNS) == -1) {
+        PLOGE("clean_mounts: setns(orig_ns)");
+    }
+
+    close(orig_ns);
+
+    if (unshare(CLONE_NEWNS) == -1) {
+        PLOGE("clean_mounts: unshare(CLONE_NEWNS) for mounted");
+        close(clean_ns);
+        return;
+    }
+
+    if (mount(nullptr, "/", nullptr, MS_REC | MS_SLAVE, nullptr) == -1) {
+        PLOGE("clean_mounts: mount(/, MS_REC | MS_SLAVE) for mounted");
+        close(clean_ns);
+        return;
+    }
+
+    if (!update_mnt_ns(Mounted, true)) {
+        PLOGE("clean_mounts: update_mnt_ns(Mounted)");
+        close(clean_ns);
+        return;
+    }
+
+    if (setns(clean_ns, CLONE_NEWNS) == -1) {
+        PLOGE("clean_mounts: setns(clean_ns)");
+    }
+
+    close(clean_ns);
+
+    if(!set_exec_con("u:r:zygote:s0")) {
+        exit(1);
+    }
+
+    LOGD("clean_mounts: restarting self: execve(%s)", argv[0]);
+    execve(argv[0], argv, envp);
+    PLOGE("clean_mounts: restart with execve(%s)", argv[0]);
+    exit(1);
+}
+
+static void do_umounts() {
+    init_modules_dev();
+
+    std::ifstream mountinfo("/proc/self/mountinfo");
+    if (!mountinfo) {
+        PLOGE("do_umounts: open /proc/self/mountinfo");
+        return;
+    }
+
+    std::vector<string> umounts;
+    std::string line;
+    while (std::getline(mountinfo, line)) {
+        size_t sep = line.find(" - ");
+        if (sep == std::string::npos) continue;
+
+        std::string pre = line.substr(0, sep);
+        std::string post = line.substr(sep + 3);
+
+        std::istringstream preIss(pre);
+        std::string mountId, parentId, majorMinor, root, mountPoint;
+
+        if (!(preIss >> mountId >> parentId >> majorMinor >> root >> mountPoint)) {
+            LOGE("do_umounts: failed to parse mountinfo line part '%s'", pre.c_str());
+            continue;
+        }
+
+        std::istringstream postIss(post);
+        std::string fsType, mountSource, fsOptions;
+
+        if (!(postIss >> fsType >> mountSource)) {
+            LOGE("do_umounts: failed to parse mountinfo line part '%s'", post.c_str());
+            continue;
+        }
+
+        if (mountSource == "KSU"
+                || mountSource == "APatch"
+                || mountSource == "magisk"
+                || root.find("/adb/") != std::string::npos
+                || majorMinor == modules_dev) {
+            umounts.push_back(mountPoint);
+        }
+    }
+
+    for (auto it = umounts.rbegin(); it != umounts.rend(); ++it) {
+        if (umount2(it->c_str(), MNT_DETACH) == -1) {
+            PLOGE("do_umounts: failed to umount %s", it->c_str());
+        }
+    }
+}
+
 void hook_functions() {
     plt_hook_list = new vector<tuple<dev_t, ino_t, const char *, void **>>();
     jni_hook_list = new map<string, vector<JNINativeMethod>>();
@@ -982,6 +1408,8 @@ void hook_functions() {
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, unshare);
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, strdup);
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, property_get);
+    PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, mount);
+    PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, umount2);
     hook_commit();
 
     // Remove unhooked methods

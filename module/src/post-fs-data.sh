@@ -29,7 +29,9 @@ create_sys_perm() {
 export TMP_PATH=/data/adb/rezygisk
 
 if [ -d $TMP_PATH ]; then
-  rm -rf $TMP_PATH
+  rm $TMP_PATH/cp32.sock 2>/dev/null
+  rm $TMP_PATH/cp64.sock 2>/dev/null
+  rm $TMP_PATH/init_monitor 2>/dev/null
 fi
 
 create_sys_perm $TMP_PATH

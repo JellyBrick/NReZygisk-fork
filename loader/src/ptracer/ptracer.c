@@ -14,7 +14,18 @@
 
 #include "utils.h"
 
-bool inject_on_main(int pid, const char *lib_path) {
+bool trace_zygote(int pid);
+
+#define STOPPED_WITH(sig, event) (WIFSTOPPED(status) && WSTOPSIG(status) == (sig) && (status >> 16) == (event))
+#define WAIT_OR_DIE wait_for_trace(pid, &status, __WALL);
+#define CONT_OR_DIE                           \
+  if (ptrace(PTRACE_CONT, pid, 0, 0) == -1) { \
+    PLOGE("cont");                            \
+                                              \
+    return false;                             \
+  }
+
+bool inject_on_main(int pid, const char *lib_path, bool is_first) {
   LOGI("injecting %s to zygote %d", lib_path, pid);
 
   /*
@@ -48,7 +59,10 @@ bool inject_on_main(int pid, const char *lib_path) {
   char **argv = (char **)((uintptr_t *)arg + 1);
   LOGV("argv %p", (void *)argv);
 
-  read_proc(pid, arg, &argc, sizeof(argc));
+  if (read_proc(pid, arg, &argc, sizeof(argc)) == -1) {
+    PLOGE("inject_on_main: read_proc arg %" PRIxPTR, arg);
+    return false;
+  }
   LOGV("argc %d", argc);
 
   char **envp = argv + argc + 1;
@@ -57,7 +71,10 @@ bool inject_on_main(int pid, const char *lib_path) {
   char **p = envp;
   while (1) {
     uintptr_t *buf;
-    read_proc(pid, (uintptr_t)p, &buf, sizeof(buf));
+    if (read_proc(pid, (uintptr_t)p, &buf, sizeof(buf)) == -1) {
+      PLOGE("inject_on_main: read_proc envp %p", p);
+      return false;
+    }
 
     if (buf == NULL) break;
 
@@ -80,7 +97,10 @@ bool inject_on_main(int pid, const char *lib_path) {
   while (1) {
     ElfW(auxv_t) buf;
 
-    read_proc(pid, (uintptr_t)v, &buf, sizeof(buf));
+    if (read_proc(pid, (uintptr_t)v, &buf, sizeof(buf)) == -1) {
+      PLOGE("inject_on_main: read_proc auxv %p", v);
+      return false;
+    }
 
     if (buf.a_type == AT_ENTRY) {
       entry_addr = (uintptr_t)buf.a_un.a_val;
@@ -346,10 +366,30 @@ bool inject_on_main(int pid, const char *lib_path) {
     args[1] = block_size;
     str = push_string(pid, &regs, rezygiskd_get_path());
     args[2] = (uintptr_t)str;
+    args[3] = (uintptr_t)(is_first ? argv : 0);
+    args[4] = (uintptr_t)(is_first ? envp : 0);
 
-    remote_call(pid, &regs, injector_entry, (uintptr_t)libc_return_addr, args, 3);
-
+    uintptr_t call = remote_call(pid, &regs, injector_entry, (uintptr_t)libc_return_addr, args, 5);
     free(args);
+
+    if (call == (uintptr_t ) execve) {
+      /* INFO: Zygote did an exec, this happens if clean_zygote is active */
+      LOGD("stopping %d", pid);
+
+      kill(pid, SIGSTOP);
+      ptrace(PTRACE_CONT, pid, 0, 0);
+      waitpid(pid, &status, __WALL);
+
+      if (STOPPED_WITH(SIGSTOP, 0)) {
+        return inject_on_main(pid, lib_path, false);
+      } else {
+        char status_str[64];
+        parse_status(status, status_str, sizeof(status_str));
+
+        LOGE("stopped by other reason after restart: %s", status_str);
+        return false;
+      }
+    }
 
     /* reset pc to entry */
     backup.REG_IP = (long) entry_addr;
@@ -369,21 +409,12 @@ bool inject_on_main(int pid, const char *lib_path) {
   return false;
 }
 
-#define STOPPED_WITH(sig, event) (WIFSTOPPED(status) && WSTOPSIG(status) == (sig) && (status >> 16) == (event))
-#define WAIT_OR_DIE wait_for_trace(pid, &status, __WALL);
-#define CONT_OR_DIE                           \
-  if (ptrace(PTRACE_CONT, pid, 0, 0) == -1) { \
-    PLOGE("cont");                            \
-                                              \
-    return false;                             \
-  }
-
 bool trace_zygote(int pid) {
   LOGI("start tracing %d (tracer %d)", pid, getpid());
 
   int status;
 
-  if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL) == -1) {
+  if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL | PTRACE_O_TRACEEXEC) == -1) {
     PLOGE("seize");
 
     return false;
@@ -395,7 +426,7 @@ bool trace_zygote(int pid) {
     char lib_path[PATH_MAX];
     snprintf(lib_path, sizeof(lib_path), "%s/lib" LP_SELECT("", "64") "/libzygisk.so", rezygiskd_get_path());
 
-    if (!inject_on_main(pid, lib_path)) {
+    if (!inject_on_main(pid, lib_path, true)) {
       LOGE("failed to inject");
 
       return false;

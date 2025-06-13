@@ -109,4 +109,6 @@ void stringify_root_impl_name(struct root_impl impl, char *restrict output);
 
 int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl impl);
 
+void clear_mns_fds(void);
+
 #endif /* UTILS_H */

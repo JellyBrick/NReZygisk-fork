@@ -798,7 +798,7 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
        SOURCES:
         - https://github.com/1q23lyc45/KitsuneMagisk/blob/8562a0b2ad142d21566c1ea41690ad64108ca14c/native/src/core/bootstages.cpp#L359
     */
-    char boot_completed[2];
+    char boot_completed[264];
     get_property("sys.boot_completed", boot_completed);
 
     if (boot_completed[0] == '1') {
@@ -827,4 +827,15 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
   else if (mns_state == Mounted) mounted_namespace_fd = ns_fd;
 
   return ns_fd;
+}
+
+void clear_mns_fds(void) {
+    if (clean_namespace_fd > 0) {
+        close(clean_namespace_fd);
+    }
+    clean_namespace_fd = 0;
+    if (mounted_namespace_fd > 0) {
+        close(mounted_namespace_fd);
+    }
+    mounted_namespace_fd = 0;
 }

@@ -8,17 +8,19 @@ void *start_addr = nullptr;
 size_t block_size = 0;
 
 extern "C" [[gnu::visibility("default")]]
-void entry(void* addr, size_t size, const char* path) {
+void entry(void* addr, size_t size, const char* path, char **argv, char **envp) {
     LOGD("Zygisk library injected, version %s", ZKSU_VERSION);
 
     start_addr = addr;
     block_size = size;
 
-    if (!rezygiskd_ping()) {
+    if (argv && !rezygiskd_ping()) {
         LOGE("Zygisk daemon is not running");
 
         return;
     }
+
+    clean_mounts(argv, envp);
 
     LOGD("start plt hooking");
     hook_functions();

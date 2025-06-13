@@ -48,7 +48,7 @@ enum Architecture {
 #define ZYGISKD_PATH "/data/adb/modules/rezygisk/bin/zygiskd" lp_select("32", "64")
 
 static enum Architecture get_arch(void) {
-  char system_arch[64];
+  char system_arch[264];
   get_property("ro.product.cpu.abilist", system_arch);
 
   if (strstr(system_arch, "arm") != NULL) return lp_select(ARM32, ARM64);
@@ -382,6 +382,8 @@ void zygiskd_start(char *restrict argv[]) {
 
     switch (action) {
       case PingHeartbeat: {
+        clear_mns_fds();
+
         struct MsgHead msg = {
           .cmd = ZYGOTE_INJECTED,
           .length = 0

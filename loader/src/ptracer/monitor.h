@@ -7,6 +7,9 @@ void init_monitor();
 
 bool trace_zygote(int pid);
 
+bool should_stop_inject32();
+bool should_stop_inject64();
+
 enum rezygiskd_command {
   START = 1,
   STOP = 2,

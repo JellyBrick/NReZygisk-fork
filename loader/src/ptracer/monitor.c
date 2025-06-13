@@ -17,6 +17,7 @@
 #include "utils.h"
 #include "daemon.h"
 #include "misc.h"
+#include "breakpoint.h"
 
 #include "monitor.h"
 
@@ -215,6 +216,7 @@ void rezygiskd_listener_callback() {
         if (tracing_state == STOPPING) tracing_state = TRACING;
         else if (tracing_state == STOPPED) {
           ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
+          attr_hook_prepare();
 
           LOGI("start tracing init");
 
@@ -466,7 +468,7 @@ static bool ensure_daemon_created(bool is_64bit) {
   if (strcmp(program, "/system/bin/app_process" # abi) == 0) {                         \
     tracer = "./bin/zygisk-ptrace" # abi;                                              \
                                                                                        \
-    if (should_stop_inject ## abi()) {                                                 \
+    if (state->stop != -1 ? state->stop : should_stop_inject ## abi()) {               \
       LOGW("zygote" # abi " restart too much times, stop injecting");                  \
                                                                                        \
       tracing_state = STOPPING;                                                        \
@@ -490,7 +492,7 @@ int sigchld_signal_fd;
 struct signalfd_siginfo sigchld_fdsi;
 int sigchld_status;
 
-pid_t *sigchld_process;
+struct init_fork *sigchld_process;
 size_t sigchld_process_count = 0;
 
 bool sigchld_listener_init() {
@@ -514,6 +516,7 @@ bool sigchld_listener_init() {
   }
 
   ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
+  attr_hook_prepare();
 
   return true;
 }
@@ -587,11 +590,11 @@ void sigchld_listener_callback() {
       CHECK_DAEMON_EXIT(64)
       CHECK_DAEMON_EXIT(32)
 
-      pid_t state = 0;
+      struct init_fork *state = NULL;
       for (size_t i = 0; i < sigchld_process_count; i++) {
-        if (sigchld_process[i] != pid) continue;
+        if (sigchld_process[i].pid != pid) continue;
 
-        state = sigchld_process[i];
+        state = &sigchld_process[i];
 
         break;
       }
@@ -600,26 +603,32 @@ void sigchld_listener_callback() {
         LOGV("new process %d attached", pid);
 
         for (size_t i = 0; i < sigchld_process_count; i++) {
-          if (sigchld_process[i] != 0) continue;
+          if (sigchld_process[i].pid != 0) continue;
 
-          sigchld_process[i] = pid;
+          attr_hook_fork_init(&sigchld_process[i]);
+          sigchld_process[i].pid = pid;
+          state = &sigchld_process[i];
 
           goto ptrace_process;
         }
 
-        sigchld_process = (pid_t *)realloc(sigchld_process, sizeof(pid_t) * (sigchld_process_count + 1));
+        attr_hook_fork_realloc(&sigchld_process, sigchld_process_count, sigchld_process_count + 1);
+
         if (sigchld_process == NULL) {
           PLOGE("realloc sigchld_process");
 
           continue;
         }
 
-        sigchld_process[sigchld_process_count] = pid;
+        attr_hook_fork_init(&sigchld_process[sigchld_process_count]);
+        sigchld_process[sigchld_process_count].pid = pid;
+        state = &sigchld_process[sigchld_process_count];
         sigchld_process_count++;
 
         ptrace_process:
 
         ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEEXEC);
+        attr_hook_place_first_breakpoint(state);
         ptrace(PTRACE_CONT, pid, 0, 0);
 
         continue;
@@ -679,6 +688,8 @@ void sigchld_listener_callback() {
           } while (false);
 
           update_status(NULL);
+        } else if (STOPPED_WITH(SIGTRAP, 0) && attr_hook_handle(state)) {
+          continue;
         } else {
           char status_str[64];
           parse_status(sigchld_status, status_str, sizeof(status_str));
@@ -687,10 +698,8 @@ void sigchld_listener_callback() {
         }
 
         for (size_t i = 0; i < sigchld_process_count; i++) {
-          if (sigchld_process[i] != pid) continue;
-
-          sigchld_process[i] = 0;
-
+          if (sigchld_process[i].pid != pid) continue;
+          attr_hook_fork_free(&sigchld_process[i]);
           break;
         }
 
@@ -708,7 +717,7 @@ void sigchld_listener_stop() {
   if (sigchld_signal_fd >= 0) close(sigchld_signal_fd);
   sigchld_signal_fd = -1;
 
-  if (sigchld_process != NULL) free(sigchld_process);
+  attr_hook_fork_realloc(&sigchld_process, sigchld_process_count, 0);
   sigchld_process = NULL;
   sigchld_process_count = 0;
 }
