@@ -1337,6 +1337,37 @@ void clean_mounts(char **argv, char **envp) {
     exit(1);
 }
 
+struct ToUmount {
+    std::string mountPoint;
+    int mountId;
+    std::string majorMinor;
+};
+
+static int mount_id_for_fd(int fd) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
+
+    std::ifstream info(path);
+    if (!info) {
+        PLOGE("mount_id_for_fd: open %s", path);
+        return -1;
+    }
+
+    std::string line;
+    while (std::getline(info, line)) {
+        constexpr char prefix[] = "mnt_id:";
+        if (line.compare(0, sizeof(prefix) - 1, prefix) == 0) {
+            std::istringstream iss(line.substr(sizeof(prefix) - 1));
+            int mnt_id;
+            iss >> mnt_id;
+            if (!iss.fail()) return mnt_id;
+            break;
+        }
+    }
+    LOGE("mount_id_for_fd: mnt_id not found");
+    return -1;
+}
+
 static void do_umounts() {
     init_modules_dev();
 
@@ -1346,7 +1377,7 @@ static void do_umounts() {
         return;
     }
 
-    std::vector<string> umounts;
+    std::vector<ToUmount> umounts;
     std::string line;
     while (std::getline(mountinfo, line)) {
         size_t sep = line.find(" - ");
@@ -1376,14 +1407,52 @@ static void do_umounts() {
                 || mountSource == "magisk"
                 || root.find("/adb/") != std::string::npos
                 || majorMinor == modules_dev) {
-            umounts.push_back(mountPoint);
+            struct ToUmount um = {
+                    .mountPoint = mountPoint,
+                    .mountId = (int) strtol(mountId.c_str(), nullptr, 10),
+                    .majorMinor = majorMinor
+            };
+            umounts.push_back(um);
         }
     }
 
     for (auto it = umounts.rbegin(); it != umounts.rend(); ++it) {
-        if (umount2(it->c_str(), MNT_DETACH) == -1) {
-            PLOGE("do_umounts: failed to umount %s", it->c_str());
+        /* INFO: These checks are to avoid issues with TOCTTOU and nested mounts */
+        int mnt_fd = open(it->mountPoint.c_str(), O_PATH | O_NOFOLLOW | O_CLOEXEC);
+        if (mnt_fd == -1) {
+            PLOGE("do_umounts: mnt_fd = open(%s)", it->mountPoint.c_str());
+            continue;
         }
+
+        int mnt_fd_id = mount_id_for_fd(mnt_fd);
+        if (mnt_fd_id != it->mountId) {
+            LOGE("do_umounts: mount id expected %d vs actual %d for %s", it->mountId, mnt_fd_id, it->mountPoint.c_str());
+            close(mnt_fd);
+            continue;
+        }
+
+        char mnt_fd_path[64];
+        snprintf(mnt_fd_path, sizeof(mnt_fd_path), "/proc/self/fd/%d/", mnt_fd);
+
+        std::string mnt_fd_dev = path_dev_str(mnt_fd_path);
+        if (mnt_fd_dev != it->majorMinor) {
+            LOGE("do_umounts: dev expected %s vs actual %s for %s", it->majorMinor.c_str(), mnt_fd_dev.c_str(), it->mountPoint.c_str());
+            close(mnt_fd);
+            continue;
+        }
+
+        /* INFO: Now we remount it as private to prevent unwanted propagation of the umount */
+        if (mount(nullptr, mnt_fd_path, nullptr, MS_REC | MS_PRIVATE, nullptr) == -1) {
+            PLOGE("do_umounts: mount(%s, MS_REC | MS_PRIVATE)", it->mountPoint.c_str());
+            close(mnt_fd);
+            continue;
+        }
+
+        if (umount2(mnt_fd_path, MNT_DETACH) == -1) {
+            PLOGE("do_umounts: umount2(%s, MNT_DETACH)", it->mountPoint.c_str());
+        }
+
+        close(mnt_fd);
     }
 }
 

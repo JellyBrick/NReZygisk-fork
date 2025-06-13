@@ -198,3 +198,6 @@ if [ "$HUAWEI_MAPLE_ENABLED" == "1" ]; then
   ui_print "- Add ro.maple.enable=0"
   echo "ro.maple.enable=0" >>"$MODPATH/system.prop"
 fi
+
+mkdir -p /data/adb/rezygisk
+touch /data/adb/rezygisk/clean_zygote
