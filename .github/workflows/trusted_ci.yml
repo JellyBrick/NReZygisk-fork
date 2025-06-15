@@ -2,7 +2,7 @@ name: Trusted CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ fork ]
 
 jobs:
   build:
