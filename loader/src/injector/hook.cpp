@@ -940,6 +940,20 @@ void ZygiskContext::app_specialize_pre() {
     flags[APP_SPECIALIZE] = true;
 
     info_flags = rezygiskd_get_process_flags(g_ctx->args.app->uid, (const char *const)process);
+
+    /* INFO: Get main app UID of isolated processes through app_data_dir */
+    if ((info_flags & (PROCESS_ON_DENYLIST | PROCESS_ROOT_IS_MAGISK)) == 0 && args.app->app_data_dir) {
+        const char *data_dir = env->GetStringUTFChars(args.app->app_data_dir, nullptr);
+        if (data_dir) {
+            struct stat st = {};
+            if (stat(data_dir, &st) == 0) {
+                uint32_t main_flags = rezygiskd_get_process_flags(st.st_uid, (const char *const)process);
+                info_flags |= (main_flags & PROCESS_ON_DENYLIST);
+            }
+            env->ReleaseStringUTFChars(args.app->app_data_dir, data_dir);
+        }
+    }
+
      if (info_flags & PROCESS_IS_FIRST_STARTED) {
         /* INFO: To ensure we are really using a clean mount namespace, we use
                    the first process it as reference for clean mount namespace,
@@ -1015,8 +1029,8 @@ void ZygiskContext::app_specialize_pre() {
                    modules are loaded and executed, so that the modules can have
                    the chance to request it.
         */
-        if (!in_denylist && flags[DO_REVERT_UNMOUNT])
-            update_mnt_ns(Clean, false);
+        // if (!in_denylist && flags[DO_REVERT_UNMOUNT])
+        //    update_mnt_ns(Clean, false);
     }
 }
 
@@ -1228,6 +1242,19 @@ static std::string path_dev_str(const char *path) {
 
     if (stat(path, &st) != 0) {
         PLOGE("path_dev_str: stat(%s)", path);
+        return "?";
+    }
+
+    std::ostringstream oss;
+    oss << major(st.st_dev) << ":" << minor(st.st_dev);
+    return oss.str();
+}
+
+static std::string fd_dev_str(int fd) {
+    struct stat st = {};
+
+    if (fstat(fd, &st) != 0) {
+        PLOGE("fd_dev_str: fstat(%d)", fd);
         return "?";
     }
 
@@ -1451,9 +1478,9 @@ static void do_umounts() {
         }
 
         char mnt_fd_path[64];
-        snprintf(mnt_fd_path, sizeof(mnt_fd_path), "/proc/self/fd/%d/", mnt_fd);
+        snprintf(mnt_fd_path, sizeof(mnt_fd_path), "/proc/self/fd/%d", mnt_fd);
 
-        std::string mnt_fd_dev = path_dev_str(mnt_fd_path);
+        std::string mnt_fd_dev = fd_dev_str(mnt_fd);
         if (mnt_fd_dev != it->majorMinor) {
             LOGE("do_umounts: dev expected %s vs actual %s for %s", it->majorMinor.c_str(), mnt_fd_dev.c_str(), it->mountPoint.c_str());
             close(mnt_fd);
@@ -1461,11 +1488,7 @@ static void do_umounts() {
         }
 
         /* INFO: Now we remount it as private to prevent unwanted propagation of the umount */
-        if (mount(nullptr, mnt_fd_path, nullptr, MS_REC | MS_PRIVATE, nullptr) == -1) {
-            PLOGE("do_umounts: mount(%s, MS_REC | MS_PRIVATE)", it->mountPoint.c_str());
-            close(mnt_fd);
-            continue;
-        }
+        mount(nullptr, mnt_fd_path, nullptr, MS_REC | MS_PRIVATE, nullptr);
 
         if (umount2(mnt_fd_path, MNT_DETACH) == -1) {
             PLOGE("do_umounts: umount2(%s, MNT_DETACH)", it->mountPoint.c_str());
