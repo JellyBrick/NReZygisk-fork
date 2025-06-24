@@ -180,6 +180,7 @@ bool inject_on_main(int pid, const char *lib_path, bool is_first) {
     LOGD("libc return addr %p", libc_return_addr);
 
     const char *libdl_path = NULL;
+    const char *libc_path = NULL;
     for (size_t i = 0; i < local_map->size; i++) {
       if (local_map->maps[i].path == NULL) continue;
 
@@ -188,7 +189,19 @@ bool inject_on_main(int pid, const char *lib_path, bool is_first) {
       if (strcmp(filename, "libdl.so") == 0) {
         libdl_path = local_map->maps[i].path;
 
-        break;
+        /* INFO: If we had found libc.so too, no need to continue searching */
+        if (libc_path) break;
+
+        continue;
+      }
+
+      if (strcmp(filename, "libc.so") == 0) {
+        libc_path = local_map->maps[i].path;
+
+        /* INFO: If we had found libdl.so too, no need to continue searching */
+        if (libdl_path) break;
+
+        continue;
       }
     }
 
@@ -258,19 +271,19 @@ bool inject_on_main(int pid, const char *lib_path, bool is_first) {
         LOGE("dlerror str is null");
 
         free(args);
+        free_maps(local_map);
+        free_maps(map);
 
         return false;
       }
 
-      #ifdef __LP64__
-        void *strlen_addr = find_func_addr(local_map, map, "/system/lib64/libc.so", "strlen");
-      #else
-        void *strlen_addr = find_func_addr(local_map, map, "/system/lib/libc.so", "strlen");
-      #endif
+      void *strlen_addr = find_func_addr(local_map, map, libc_path, "strlen");
       if (strlen_addr == NULL) {
         LOGE("find strlen");
 
         free(args);
+        free_maps(local_map);
+        free_maps(map);
 
         return false;
       }
@@ -282,6 +295,8 @@ bool inject_on_main(int pid, const char *lib_path, bool is_first) {
         LOGE("dlerror len <= 0");
 
         free(args);
+        free_maps(local_map);
+        free_maps(map);
 
         return false;
       }
@@ -291,6 +306,8 @@ bool inject_on_main(int pid, const char *lib_path, bool is_first) {
         LOGE("malloc err");
 
         free(args);
+        free_maps(local_map);
+        free_maps(map);
 
         return false;
       }
@@ -301,6 +318,9 @@ bool inject_on_main(int pid, const char *lib_path, bool is_first) {
 
       free(err);
       free(args);
+
+      free_maps(local_map);
+      free_maps(map);
 
       return false;
     }

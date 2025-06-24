@@ -51,8 +51,11 @@ static enum Architecture get_arch(void) {
   char system_arch[264];
   get_property("ro.product.cpu.abilist", system_arch);
 
-  if (strstr(system_arch, "arm") != NULL) return lp_select(ARM32, ARM64);
+  /* INFO: "PC" architectures should have priority because in an emulator
+             the native architecture should have priority over the emulated
+             architecture for "native" reasons. */
   if (strstr(system_arch, "x86") != NULL) return lp_select(X86, X86_64);
+  if (strstr(system_arch, "arm") != NULL) return lp_select(ARM32, ARM64);
 
   LOGE("Unsupported system architecture: %s\n", system_arch);
   exit(1);
@@ -356,6 +359,9 @@ void zygiskd_start(char *restrict argv[]) {
 
     return;
   }
+
+  struct sigaction sa = { .sa_handler = SIG_IGN };
+  sigaction(SIGPIPE, &sa, NULL);
 
   bool first_process = true;
   while (1) {
