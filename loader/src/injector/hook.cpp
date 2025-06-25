@@ -946,7 +946,7 @@ void ZygiskContext::app_specialize_pre() {
         const char *data_dir = env->GetStringUTFChars(args.app->app_data_dir, nullptr);
         if (data_dir) {
             struct stat st = {};
-            if (stat(data_dir, &st) == 0) {
+            if (stat(data_dir, &st) == 0 && st.st_uid != (uid_t)g_ctx->args.app->uid) {
                 uint32_t main_flags = rezygiskd_get_process_flags(st.st_uid, (const char *const)process);
                 info_flags |= (main_flags & PROCESS_ON_DENYLIST);
             }
@@ -1294,6 +1294,23 @@ static void init_modules_dev() {
     }
 }
 
+static bool load_early_mns() {
+    const char *path = TMP_PATH "/" LP_SELECT("mns32", "mns64");
+
+    int early_ns = open(path, O_RDONLY | O_CLOEXEC);
+    if (early_ns == -1) {
+        PLOGE("load_early_mns: open(%s)", path);
+        return false;
+    }
+
+    if (setns(early_ns, CLONE_NEWNS) == -1) {
+        PLOGE("load_early_mns: setns(%d)", early_ns);
+        return false;
+    }
+
+    return true;
+}
+
 void clean_mounts(char **argv, char **envp) {
     if (!argv && !envp) {
         /* INFO: If argv is null, it means that we are past re-exec (see ptracer.c is_first) */
@@ -1322,10 +1339,12 @@ void clean_mounts(char **argv, char **envp) {
         return;
     }
 
-    if (unshare(CLONE_NEWNS) == -1) {
-        PLOGE("clean_mounts: unshare(CLONE_NEWNS) for clean");
-        close(orig_ns);
-        return;
+    if (!load_early_mns()) {
+        if (unshare(CLONE_NEWNS) == -1) {
+            PLOGE("clean_mounts: unshare(CLONE_NEWNS) for clean");
+            close(orig_ns);
+            return;
+        }
     }
 
     if (mount(nullptr, "/", nullptr, MS_REC | MS_SLAVE, nullptr) == -1) {

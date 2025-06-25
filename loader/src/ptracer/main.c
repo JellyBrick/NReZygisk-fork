@@ -4,11 +4,16 @@
 #include "utils.h"
 #include "monitor.h"
 #include "daemon.h"
+#include "mount.h"
 
 int main(int argc, char **argv) {
   printf("The ReZygisk Tracer %s\n\n", ZKSU_VERSION);
 
-  if (argc >= 2 && strcmp(argv[1], "monitor") == 0) {
+  if (argc >= 2 && strcmp(argv[1], "mount_ns") == 0) {
+    mount_ns_main(argv);
+
+    return 0;
+  } else if (argc >= 2 && strcmp(argv[1], "monitor") == 0) {
     init_monitor();
 
     return 0;

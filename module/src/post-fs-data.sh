@@ -32,6 +32,8 @@ if [ -d $TMP_PATH ]; then
   rm $TMP_PATH/cp32.sock 2>/dev/null
   rm $TMP_PATH/cp64.sock 2>/dev/null
   rm $TMP_PATH/init_monitor 2>/dev/null
+  rm $TMP_PATH/mns32 2>/dev/null
+  rm $TMP_PATH/mns64 2>/dev/null
 fi
 
 create_sys_perm $TMP_PATH
@@ -52,8 +54,10 @@ CPU_ABIS=$(getprop ro.product.cpu.abilist)
 
 if [[ "$CPU_ABIS" == *"arm64-v8a"* || "$CPU_ABIS" == *"x86_64"* ]]; then
   ./bin/zygisk-ptrace64 monitor &
+  ./bin/zygisk-ptrace64 mount_ns
 else
   # INFO: Device is 32-bit only
 
   ./bin/zygisk-ptrace32 monitor &
+  ./bin/zygisk-ptrace32 mount_ns
 fi
