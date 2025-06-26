@@ -130,6 +130,11 @@ static void attr_hook_breakpoint(struct init_fork *proc, void *bp_addr) {
 }
 
 void attr_hook_place_first_breakpoint(struct init_fork *proc) {
+#if !defined(__aarch64__)
+    LOGE("attr_hook_place_first_breakpoint: not aarch64");
+    return;
+#endif
+
     if (!setexeccon_addr || !execve_addr) return;
 
     if (access(TMP_PATH "/clean_zygote", F_OK) != 0) {

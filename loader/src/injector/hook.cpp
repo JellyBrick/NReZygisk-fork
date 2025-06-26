@@ -1418,7 +1418,7 @@ void clean_mounts(char **argv, char **envp) {
          * our security context to init. In this case, calling execve will cause a worse
          * detection than what it fixes, so we don't.
          */
-        PLOGE("clean_mounts: in zygote context, skip reexec");
+        LOGE("clean_mounts: in zygote context, skip reexec");
         is_after_reexec = true;
     } else {
         if (!set_exec_con("u:r:zygote:s0")) {

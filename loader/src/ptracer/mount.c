@@ -59,7 +59,7 @@ void mount_ns_main(char **argv) {
     if (fork() == 0) {
         close(ready_pipe[0]);
         const char *name = "zygisk-mnt\0\0\0\0\0\0";
-        if (argv[0] && strlen(argv[0]) >= strlen(name)) {
+        if (argv && argv[0] && strlen(argv[0]) >= strlen(name)) {
             strcpy(argv[0], name);
         }
         prctl(PR_SET_NAME, name);
