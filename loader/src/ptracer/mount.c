@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <stdio.h>
+#include <sys/prctl.h>
 
 #include "utils.h"
 #include "mount.h"
@@ -57,7 +58,11 @@ void mount_ns_main(char **argv) {
 
     if (fork() == 0) {
         close(ready_pipe[0]);
-        strncpy(argv[0], "zygisk-mnt", strlen(argv[0]));
+        const char *name = "zygisk-mnt\0\0\0\0\0\0";
+        if (argv[0] && strlen(argv[0]) >= strlen(name)) {
+            strcpy(argv[0], name);
+        }
+        prctl(PR_SET_NAME, name);
 
         if (LP_SELECT(false, true)) {
             mount_save_ns(TMP_PATH "/mns64", ns64);
