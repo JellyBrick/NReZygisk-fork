@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-void init_monitor();
+void init_monitor(int ready_fd);
 
 bool trace_zygote(int pid);
 

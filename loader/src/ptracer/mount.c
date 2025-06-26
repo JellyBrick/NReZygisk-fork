@@ -52,7 +52,11 @@ void mount_ns_main(char **argv) {
     }
     int ns32 = mount_make_ns();
 
+    int ready_pipe[2] = {-1, -1};
+    pipe(ready_pipe);
+
     if (fork() == 0) {
+        close(ready_pipe[0]);
         strncpy(argv[0], "zygisk-mnt", strlen(argv[0]));
 
         if (LP_SELECT(false, true)) {
@@ -60,6 +64,11 @@ void mount_ns_main(char **argv) {
         }
         mount_save_ns(TMP_PATH "/mns32", ns32);
 
+        close(ready_pipe[1]);
         while (pause());
     }
+
+    close(ready_pipe[1]);
+    char dummy;
+    TEMP_FAILURE_RETRY(read(ready_pipe[0], &dummy, 1));
 }

@@ -14,8 +14,16 @@ int main(int argc, char **argv) {
 
     return 0;
   } else if (argc >= 2 && strcmp(argv[1], "monitor") == 0) {
-    init_monitor();
-
+    int ready_pipe[2] = {-1, -1};
+    pipe(ready_pipe);
+    if (fork() == 0) {
+      close(ready_pipe[0]);
+      init_monitor(ready_pipe[1]);
+      _exit(0);
+    }
+    close(ready_pipe[1]);
+    char dummy;
+    TEMP_FAILURE_RETRY(read(ready_pipe[0], &dummy, 1));
     return 0;
   } else if (argc >= 3 && strcmp(argv[1], "trace") == 0) {
       if (argc >= 4 && strcmp(argv[3], "--restart") == 0) rezygiskd_zygote_restart();

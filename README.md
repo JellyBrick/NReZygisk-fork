@@ -1,7 +1,7 @@
 # WARNING
 
 This fork is primarily intended for my own personal use.
-It is in no way affiliated with, approved by or supported by PerfomanC or ThePedroo.
+It is in no way affiliated with, approved by or supported by PerformanC or ThePedroo.
 
 Note that, on one hand, this fork is what I use on my daily driver phone, so it is in my best
 interest for it to be stable and properly tested. On the other hand, I am unlikely to put any

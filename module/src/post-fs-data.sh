@@ -53,11 +53,11 @@ fi
 CPU_ABIS=$(getprop ro.product.cpu.abilist)
 
 if [[ "$CPU_ABIS" == *"arm64-v8a"* || "$CPU_ABIS" == *"x86_64"* ]]; then
-  ./bin/zygisk-ptrace64 monitor &
+  ./bin/zygisk-ptrace64 monitor
   ./bin/zygisk-ptrace64 mount_ns
 else
   # INFO: Device is 32-bit only
 
-  ./bin/zygisk-ptrace32 monitor &
+  ./bin/zygisk-ptrace32 monitor
   ./bin/zygisk-ptrace32 mount_ns
 fi

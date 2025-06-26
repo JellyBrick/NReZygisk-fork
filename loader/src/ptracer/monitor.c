@@ -849,7 +849,7 @@ static bool prepare_environment() {
   return update_status(NULL);
 }
 
-void init_monitor() {
+void init_monitor(int ready_fd) {
   LOGI("ReZygisk %s", ZKSU_VERSION);
 
   if (!prepare_environment()) exit(1);
@@ -884,6 +884,7 @@ void init_monitor() {
   }
 
   monitor_events_register_event(&sigchld_cbs, sigchld_signal_fd, EPOLLIN | EPOLLET);
+  close(ready_fd);
 
   monitor_events_loop();
 
