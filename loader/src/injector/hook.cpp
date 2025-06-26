@@ -1230,8 +1230,26 @@ static bool set_exec_con(const char *con) {
         fclose(fp);
         return false;
     }
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        PLOGE("set_exec_con: fclose exec");
+        return false;
+    }
     return true;
+}
+
+static int is_zygote_con() {
+    const std::string path = "/proc/self/attr/current";
+    std::ifstream file(path);
+
+    if (!file.is_open()) {
+        PLOGE("is_zygote_con: ifstream(/proc/self/attr/current)");
+        return -1;
+    }
+
+    std::string contents((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
+
+    return contents.find("zygote") != std::string::npos;
 }
 
 static std::string modules_dev;
@@ -1305,9 +1323,11 @@ static bool load_early_mns() {
 
     if (setns(early_ns, CLONE_NEWNS) == -1) {
         PLOGE("load_early_mns: setns(%d)", early_ns);
+        close(early_ns);
         return false;
     }
 
+    close(early_ns);
     return true;
 }
 
@@ -1392,14 +1412,24 @@ void clean_mounts(char **argv, char **envp) {
 
     close(clean_ns);
 
-    if(!set_exec_con("u:r:zygote:s0")) {
+    if (is_zygote_con() != 0) {
+        /*
+         * INFO: If we are here, it means that the ptrace code (breakpoint.c) failed to set
+         * our security context to init. In this case, calling execve will cause a worse
+         * detection than what it fixes, so we don't.
+         */
+        PLOGE("clean_mounts: in zygote context, skip reexec");
+        is_after_reexec = true;
+    } else {
+        if (!set_exec_con("u:r:zygote:s0")) {
+            exit(1);
+        }
+
+        LOGD("clean_mounts: restarting self: execve(%s)", argv[0]);
+        execve(argv[0], argv, envp);
+        PLOGE("clean_mounts: restart with execve(%s)", argv[0]);
         exit(1);
     }
-
-    LOGD("clean_mounts: restarting self: execve(%s)", argv[0]);
-    execve(argv[0], argv, envp);
-    PLOGE("clean_mounts: restart with execve(%s)", argv[0]);
-    exit(1);
 }
 
 struct ToUmount {
