@@ -10,6 +10,14 @@
 #include "mount.h"
 #include "daemon.h"
 
+static void set_process_name(char **argv, const char *name) {
+    prctl(PR_SET_NAME, name);
+    if (!argv || !argv[0]) return;
+    size_t orig_len = strlen(argv[0]);
+    argv[0][0] = 0;
+    strncat(argv[0], name, orig_len);
+}
+
 static bool mount_make_ns() {
     if (unshare(CLONE_NEWNS) == -1) {
         PLOGE("mount_make_ns: unshare(CLONE_NEWNS)");
@@ -23,7 +31,8 @@ static bool mount_make_ns() {
 static void mount_save_ns(const char *save) {
     char path[64];
     int pid = getpid();
-    snprintf(path, sizeof(path), "/proc/%d/ns/mnt", pid);
+    int fd = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
+    snprintf(path, sizeof(path), "/proc/%d/fd/%d", pid, fd);
 
     unlink(save);
     symlink(path, save);
@@ -35,10 +44,7 @@ static void mount_spawn_ns(char **argv, const char *pname, const char *save) {
 
     if (fork() == 0) {
         close(ready_pipe[0]);
-        if (argv && argv[0] && strlen(argv[0]) >= strlen(pname)) {
-            strcpy(argv[0], pname);
-        }
-        prctl(PR_SET_NAME, pname);
+        set_process_name(argv, pname);
 
         if (!mount_make_ns()) {
             _exit(0);
@@ -61,8 +67,8 @@ void mount_ns_main(char **argv) {
     }
 
     if (LP_SELECT(false, true)) {
-        mount_spawn_ns(argv, "zygisk-m64\0\0\0\0\0\0", TMP_PATH "/mns64");
+        mount_spawn_ns(argv, "zygisk-m64", TMP_PATH "/mns64");
     }
 
-    mount_spawn_ns(argv, "zygisk-m32\0\0\0\0\0\0", TMP_PATH "/mns32");
+    mount_spawn_ns(argv, "zygisk-m32", TMP_PATH "/mns32");
 }

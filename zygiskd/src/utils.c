@@ -10,6 +10,7 @@
 #include <sys/un.h>
 #include <sys/sysmacros.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 
 #include <unistd.h>
 #include <linux/limits.h>
@@ -25,6 +26,7 @@
 
 int clean_namespace_fd = 0;
 int mounted_namespace_fd = 0;
+int mounted_namespace_pipe = 0;
 
 bool switch_mount_namespace(pid_t pid) {
   char path[PATH_MAX];
@@ -660,6 +662,14 @@ bool umount_root(struct root_impl impl) {
   return true;
 }
 
+static void set_process_name(const char *name) {
+    prctl(PR_SET_NAME, name);
+    if (!g_argv || !g_argv[0]) return;
+    size_t orig_len = strlen(g_argv[0]);
+    g_argv[0][0] = 0;
+    strncat(g_argv[0], name, orig_len);
+}
+
 int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl impl) {
   if (mns_state == Clean && clean_namespace_fd != 0) return clean_namespace_fd;
   if (mns_state == Mounted && mounted_namespace_fd != 0) return mounted_namespace_fd;
@@ -674,9 +684,19 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
   int socket_parent = sockets[0];
   int socket_child = sockets[1];
 
+  if (mns_state == Mounted && mounted_namespace_pipe > 0) {
+      close(mounted_namespace_pipe);
+      mounted_namespace_pipe = 0;
+  }
+  int end_pipe[2] = {-1, -1};
+  pipe(end_pipe);
+
   pid_t fork_pid = fork();
   if (fork_pid < 0) {
     LOGE("fork: %s\n", strerror(errno));
+
+    close(end_pipe[0]);
+    close(end_pipe[1]);
 
     if (close(socket_parent) == -1)
       LOGE("Failed to close socket_parent: %s\n", strerror(errno));
@@ -689,6 +709,7 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
 
   if (fork_pid == 0) {
     close(socket_parent);
+    close(end_pipe[1]);
 
     if (switch_mount_namespace(pid) == false) {
       LOGE("Failed to switch mount namespace\n");
@@ -710,6 +731,11 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
 
         goto finalize_mns_fork;
       }
+    } else if (fork() == 0) {
+      set_process_name(lp_select("zygisk-md32", "zygisk-md64"));
+      char dummy;
+      while(read(end_pipe[0], &dummy, 1) == -1 && errno == EINTR);
+      _exit(0);
     }
 
     if (write_uint8_t(socket_child, 1) == -1) {
@@ -731,6 +757,9 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
       _exit(0);
   }
 
+  close(end_pipe[0]);
+  if (mns_state == Mounted) mounted_namespace_pipe = end_pipe[1];
+  else close(end_pipe[1]);
   close(socket_child);
 
   uint8_t has_succeeded = 0;
@@ -837,4 +866,8 @@ void clear_mns_fds(void) {
         close(mounted_namespace_fd);
     }
     mounted_namespace_fd = 0;
+    if (mounted_namespace_pipe > 0) {
+        close(mounted_namespace_pipe);
+    }
+    mounted_namespace_pipe = 0;
 }

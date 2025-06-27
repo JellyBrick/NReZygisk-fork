@@ -111,4 +111,6 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
 
 void clear_mns_fds(void);
 
+extern char **g_argv;
+
 #endif /* UTILS_H */

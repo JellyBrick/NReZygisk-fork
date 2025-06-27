@@ -11,9 +11,12 @@
 
 #include "utils.h"
 
+char **g_argv = 0;
+
 int __android_log_print(int prio, const char *tag, const char *fmt, ...);
 
 int main(int argc, char *argv[]) {
+    g_argv = argv;
   #ifdef __LP64__
     LOGI("Welcome to ReZygisk %s Zygiskd64!\n", ZKSU_VERSION);
   #else

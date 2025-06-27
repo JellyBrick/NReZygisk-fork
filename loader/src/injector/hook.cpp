@@ -85,7 +85,7 @@ struct ZygiskContext {
     int pid;
     bitset<FLAG_MAX> flags;
     uint32_t info_flags;
-    bitset<MAX_FD_SIZE> allowed_fds;
+    bitset<MAX_FD_SIZE + 1> allowed_fds;
     vector<int> exempted_fds;
 
     struct RegisterInfo {
@@ -680,19 +680,12 @@ void ZygiskContext::fork_pre() {
     }
 
     struct dirent *entry;
+    int dir_fd = dirfd(dir);
+
     while ((entry = readdir(dir))) {
         int fd = parse_int(entry->d_name);
-        if (fd < 0 || fd >= MAX_FD_SIZE) {
-            close(fd);
-
-            continue;
-        }
-
-        allowed_fds[fd] = true;
+        if (fd >= 0 && fd != dir_fd) allowed_fds[min(fd, MAX_FD_SIZE)] = true;
     }
-
-    /* INFO: The dirfd should not be allowed */
-    allowed_fds[dirfd(dir)] = false;
 
     closedir(dir);
 }
@@ -712,8 +705,8 @@ void ZygiskContext::sanitize_fds() {
 
             env->SetIntArrayRegion(array, off, static_cast<int>(exempted_fds.size()), exempted_fds.data());
             for (int fd : exempted_fds) {
-                if (fd >= 0 && fd < MAX_FD_SIZE) {
-                    allowed_fds[fd] = true;
+                if (fd >= 0) {
+                    allowed_fds[min(fd, MAX_FD_SIZE)] = true;
                 }
             }
             *args.app->fds_to_ignore = array;
@@ -726,8 +719,8 @@ void ZygiskContext::sanitize_fds() {
             int len = env->GetArrayLength(fdsToIgnore);
             for (int i = 0; i < len; ++i) {
                 int fd = arr[i];
-                if (fd >= 0 && fd < MAX_FD_SIZE) {
-                    allowed_fds[fd] = true;
+                if (fd >= 0) {
+                    allowed_fds[min(fd, MAX_FD_SIZE)] = true;
                 }
             }
             if (jintArray newFdList = update_fd_array(len)) {
@@ -754,7 +747,7 @@ void ZygiskContext::sanitize_fds() {
     struct dirent *entry;
     while ((entry = readdir(dir))) {
         int fd = parse_int(entry->d_name);
-        if (fd < 0 || fd > MAX_FD_SIZE || fd == dfd || allowed_fds[fd]) continue;
+        if (fd < 0 || fd == dfd || allowed_fds[min(fd, MAX_FD_SIZE)]) continue;
 
         close(fd);
 
@@ -978,6 +971,7 @@ void ZygiskContext::app_specialize_pre() {
                    if Zygisk is enabled.
         */
         setenv("ZYGISK_ENABLED", "1", 1);
+        if (clean_zygote) update_mnt_ns(Mounted, false);
     } else {
         if ((info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST) {
             flags[DO_REVERT_UNMOUNT] = true;
@@ -1330,6 +1324,7 @@ static bool load_early_mns() {
         return false;
     }
 
+    unlink(path);
     close(early_ns);
     return true;
 }
@@ -1385,6 +1380,19 @@ void clean_mounts(char **argv, char **envp) {
         return;
     }
 
+    int mns_proc_sock = -1;
+    pid_t mns_proc_pid;
+    if ((mns_proc_pid = fork_create(&mns_proc_sock)) == 0) {
+        /*
+         * INFO: Having a mount namespace with no processes in it can cause weird things
+         * to happen, so we create this process to keep the clean namespace active while
+         * we temporarily switch back to the original namespace.
+         */
+        char dummy;
+        TEMP_FAILURE_RETRY(read(mns_proc_sock, &dummy, 1));
+        _exit(0);
+    }
+
     if (setns(orig_ns, CLONE_NEWNS) == -1) {
         PLOGE("clean_mounts: setns(orig_ns)");
     }
@@ -1393,19 +1401,20 @@ void clean_mounts(char **argv, char **envp) {
 
     if (unshare(CLONE_NEWNS) == -1) {
         PLOGE("clean_mounts: unshare(CLONE_NEWNS) for mounted");
-        close(clean_ns);
-        return;
+        goto fail_close;
     }
 
     if (mount(nullptr, "/", nullptr, MS_REC | MS_SLAVE, nullptr) == -1) {
         PLOGE("clean_mounts: mount(/, MS_REC | MS_SLAVE) for mounted");
-        close(clean_ns);
-        return;
+        goto fail_close;
     }
 
     if (!update_mnt_ns(Mounted, true)) {
         PLOGE("clean_mounts: update_mnt_ns(Mounted)");
+        fail_close:
         close(clean_ns);
+        close(mns_proc_sock);
+        fork_wait(mns_proc_pid);
         return;
     }
 
@@ -1414,6 +1423,8 @@ void clean_mounts(char **argv, char **envp) {
     }
 
     close(clean_ns);
+    close(mns_proc_sock);
+    fork_wait(mns_proc_pid);
 
     if (is_zygote_con() != 0) {
         /*
