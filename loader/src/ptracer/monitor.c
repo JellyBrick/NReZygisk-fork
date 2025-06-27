@@ -695,6 +695,7 @@ void sigchld_listener_callback() {
           parse_status(sigchld_status, status_str, sizeof(status_str));
 
           LOGW("process %d received unknown sigchld_status %s", pid, status_str);
+          attr_hook_bad_status();
         }
 
         for (size_t i = 0; i < sigchld_process_count; i++) {

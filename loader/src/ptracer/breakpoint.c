@@ -46,27 +46,23 @@ static void *attr_hook_map_fun(struct maps *init_maps, const char *lib, const ch
         if (!map->path) continue;
         size_t path_len = strlen(map->path);
         if (path_len > lib_len && strcmp(map->path + (path_len - lib_len), lib) == 0) {
-            void *my_lib = dlopen(map->path, RTLD_LAZY);
             void *my_map = NULL;
             size_t my_size = (size_t)(map->end - map->start);
-            if (!my_lib) {
-                int fd = open(map->path, O_RDONLY | O_CLOEXEC);
-                if (!fd) {
-                    PLOGE("attr_hook_map_fun: can't open %s", map->path);
-                    return NULL;
-                }
-                my_map = mmap(NULL, my_size, PROT_READ, MAP_PRIVATE, fd, (off_t) map->offset);
-                close(fd);
-                if (!my_map) {
-                    PLOGE("attr_hook_map_fun: can't map %s", map->path);
-                    return NULL;
-                }
+            int fd = open(map->path, O_RDONLY | O_CLOEXEC);
+            if (!fd) {
+                PLOGE("attr_hook_map_fun: can't open %s", map->path);
+                return NULL;
+            }
+            my_map = mmap(NULL, my_size, PROT_READ, MAP_PRIVATE, fd, (off_t) map->offset);
+            close(fd);
+            if (!my_map) {
+                PLOGE("attr_hook_map_fun: can't map %s", map->path);
+                return NULL;
             }
             struct maps *my_maps = parse_maps("/proc/self/maps");
             void *addr = find_func_addr(my_maps, init_maps, map->path, fun);
             free_maps(my_maps);
-            if (my_lib) dlclose(my_lib);
-            if (my_map) munmap(my_map, my_size);
+            munmap(my_map, my_size);
             if (!addr) {
                 LOGE("attr_hook_map_fun: can't find %s address in %s", fun, map->path);
                 return NULL;
@@ -81,6 +77,15 @@ static void *attr_hook_map_fun(struct maps *init_maps, const char *lib, const ch
 void attr_hook_prepare(void) {
     setexeccon_addr = 0;
     execve_addr = 0;
+
+#if !defined(__aarch64__)
+    LOGE("attr_hook_prepare: not aarch64");
+    return;
+#endif
+
+    if (access(TMP_PATH "/clean_zygote", F_OK) != 0) {
+        return;
+    }
 
     struct maps *init_maps = parse_maps("/proc/1/maps");
     if (!init_maps) {
@@ -129,17 +134,10 @@ static void attr_hook_breakpoint(struct init_fork *proc, void *bp_addr) {
     proc->next_breakpoint = bp_addr;
 }
 
+static bool enable_new_bp = true;
+
 void attr_hook_place_first_breakpoint(struct init_fork *proc) {
-#if !defined(__aarch64__)
-    LOGE("attr_hook_place_first_breakpoint: not aarch64");
-    return;
-#endif
-
-    if (!setexeccon_addr || !execve_addr) return;
-
-    if (access(TMP_PATH "/clean_zygote", F_OK) != 0) {
-        return;
-    }
+    if (!setexeccon_addr || !execve_addr || !enable_new_bp) return;
 
     attr_hook_breakpoint(proc, execve_addr);
 }
@@ -194,6 +192,7 @@ bool attr_hook_handle(struct init_fork *proc) {
 
     if (((void*) regs.REG_IP) != proc->next_breakpoint) {
         LOGE("attr_hook_handle: SIGTRAP @ %p, bp @ %p", (void*) regs.REG_IP, proc->next_breakpoint);
+        setexeccon_addr = 0;
         return false;
     }
 
@@ -290,4 +289,8 @@ bool attr_hook_handle(struct init_fork *proc) {
     }
 
     return true;
+}
+
+void attr_hook_bad_status() {
+    enable_new_bp = false;
 }

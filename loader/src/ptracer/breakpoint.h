@@ -17,5 +17,6 @@ void attr_hook_fork_realloc(struct init_fork **procs, size_t old_len, size_t new
 void attr_hook_prepare(void);
 void attr_hook_place_first_breakpoint(struct init_fork *proc);
 bool attr_hook_handle(struct init_fork *proc);
+void attr_hook_bad_status();
 
 #endif /* BREAKPOINT_H */
