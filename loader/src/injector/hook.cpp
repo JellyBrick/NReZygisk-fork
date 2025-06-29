@@ -57,6 +57,7 @@ enum {
 enum mns_stages {
     MNS_INIT,
     MNS_MID,
+    MNS_PRE_APP,
     MNS_APP
 };
 
@@ -931,6 +932,7 @@ void ZygiskContext::run_modules_post() {
 /* Zygisksu changed: Load module fds */
 void ZygiskContext::app_specialize_pre() {
     flags[APP_SPECIALIZE] = true;
+    mns_stage = MNS_PRE_APP;
 
     info_flags = rezygiskd_get_process_flags(g_ctx->args.app->uid, (const char *const)process);
 
@@ -1073,6 +1075,7 @@ void ZygiskContext::nativeForkSystemServer_pre() {
     if (!is_child())
       return;
 
+    mns_stage = MNS_PRE_APP;
     load_modules_only();
     run_modules_pre();
     rezygiskd_system_server_started();
@@ -1295,7 +1298,7 @@ static void init_modules_dev() {
     std::string data_dev = path_dev_str("/data");
     std::string mod_dev = path_dev_str("/data/adb/modules");
 
-    if (mod_dev != root_dev && mod_dev != data_dev) {
+    if (mod_dev != root_dev && mod_dev != data_dev && mod_dev != "?") {
         modules_dev = mod_dev;
     } else {
         modules_dev = "- no separate device -";
