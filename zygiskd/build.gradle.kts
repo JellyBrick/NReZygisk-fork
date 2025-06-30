@@ -26,16 +26,22 @@ val verCode: Int by rootProject.extra
 val verName: String by rootProject.extra
 val commitHash: String by rootProject.extra
 
-val CStandardFlags = arrayOf(
+val baseCStandardFlags = arrayOf(
   "-D_GNU_SOURCE", "-std=c99", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
-  "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array", 
+  "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array",
   "-Wconversion", "-Wno-fixed-enum-extension", "-Iroot_impl", "-llog",
   "-DMIN_APATCH_VERSION=$minAPatchVersion",
   "-DMIN_KSU_VERSION=$minKsuVersion",
   "-DMAX_KSU_VERSION=$maxKsuVersion",
-  "-DMIN_MAGISK_VERSION=$minMagiskVersion",
-  "-DZKSU_VERSION=\"$verName\""
+  "-DMIN_MAGISK_VERSION=$minMagiskVersion"
 )
+
+val zkVersionFlag = if (OperatingSystem.current().isWindows)
+  "-DZKSU_VERSION=\\\"$verName\\\""
+else
+  "-DZKSU_VERSION=\"$verName\""
+
+val CStandardFlags = baseCStandardFlags + zkVersionFlag
 
 val CFlagsRelease = arrayOf(
   "-Wl,--strip-all", "-flto=thin", "-Ofast"
@@ -64,10 +70,24 @@ task("buildAndStrip") {
   doLast {
     val ndkPath = getLatestNDKPath()
 
-    val aarch64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", "linux-x86_64", "bin", "aarch64-linux-android34-clang").toString()
-    val armv7aCompiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", "linux-x86_64", "bin", "armv7a-linux-androideabi34-clang").toString()
-    val x86Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", "linux-x86_64", "bin", "i686-linux-android34-clang").toString()
-    val x86_64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", "linux-x86_64", "bin", "x86_64-linux-android34-clang").toString()
+	var hostTriple = ""
+    var suffix = ""
+
+    if (OperatingSystem.current().isWindows) {
+      hostTriple = "windows-x86_64"
+      suffix = ".cmd"
+    } else if (OperatingSystem.current().isLinux) {
+      hostTriple = "linux-x86_64"
+    } else if (OperatingSystem.current().isMacOsX) {
+      hostTriple = "darwin-x86_64"
+    } else {
+      throw UnsupportedOperationException ("System")
+    }
+
+    val aarch64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "aarch64-linux-android34-clang${suffix}").toString()
+    val armv7aCompiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "armv7a-linux-androideabi34-clang${suffix}").toString()
+    val x86Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "i686-linux-android34-clang${suffix}").toString()
+    val x86_64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "x86_64-linux-android34-clang${suffix}").toString()
 
     if (!Paths.get(aarch64Compiler).toFile().exists()) {
       throw Exception("aarch64 compiler not found at $aarch64Compiler")
