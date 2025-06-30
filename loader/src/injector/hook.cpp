@@ -147,6 +147,7 @@ bool enable_unloader = false;
 bool hooked_unloader = false;
 bool clean_zygote = false;
 bool modules_loaded = false;
+bool zygote_dlopen = false;
 enum mns_stages mns_stage = MNS_INIT;
 std::vector<lsplt::MapInfo> cached_map_infos = {};
 list<ZygiskModule> modules;
@@ -344,7 +345,6 @@ DCL_HOOK_FUNC(int, pthread_attr_setstacksize, void *target, size_t size) {
 
     if (should_unmap_zygisk) {
         unhook_functions();
-        cached_map_infos.clear();
 
         if (should_unmap_zygisk) {
             // Because both `pthread_attr_setstacksize` and `dlclose` have the same function signature,
@@ -654,7 +654,7 @@ int sigmask(int how, int signum) {
 }
 
 void ZygiskContext::fork_pre() {
-    if (!modules_loaded && access(TMP_PATH "/zygote_dlopen", F_OK) == 0) {
+    if (zygote_dlopen && !modules_loaded) {
         load_modules_only();
     }
 
@@ -1497,6 +1497,7 @@ static void do_umounts() {
 }
 
 void hook_functions() {
+    zygote_dlopen = access(TMP_PATH "/zygote_dlopen", F_OK) == 0;
     plt_hook_list = new vector<tuple<dev_t, ino_t, const char *, void **>>();
     jni_hook_list = new map<string, vector<JNINativeMethod>>();
 
@@ -1575,4 +1576,8 @@ static void unhook_functions() {
         LOGE("Failed to restore plt_hook");
         should_unmap_zygisk = false;
     }
+
+    std::vector<lsplt::MapInfo>().swap(cached_map_infos);
+    list<ZygiskModule>().swap(modules);
+    std::string().swap(modules_dev);
 }
