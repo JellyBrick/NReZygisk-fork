@@ -173,6 +173,7 @@ namespace {
     };
 
 #define call_app(method)               \
+if (!mod.api_version) return;          \
 switch (*mod.api_version) {            \
 case 1:                                \
 case 2: {                              \
@@ -199,10 +200,10 @@ case 5:                                \
             call_app(postAppSpecialize)
         }
         void preServerSpecialize(ServerSpecializeArgs_v1 *args) const {
-            mod.v1->preServerSpecialize(mod.v1->impl, args);
+            if (mod.v1) mod.v1->preServerSpecialize(mod.v1->impl, args);
         }
         void postServerSpecialize(const ServerSpecializeArgs_v1 *args) const {
-            mod.v1->postServerSpecialize(mod.v1->impl, args);
+            if (mod.v1) mod.v1->postServerSpecialize(mod.v1->impl, args);
         }
 
         bool valid() const;
@@ -210,7 +211,7 @@ case 5:                                \
         int getModuleDir() const;
         void setOption(zygisk::Option opt);
         static uint32_t getFlags();
-        bool tryUnload() const { return unload && dlclose(handle) == 0; };
+        bool tryUnload() const { return (unload || !mod.api_version) && dlclose(handle) == 0; };
         void clearApi() { memset(&api, 0, sizeof(api)); }
         int getId() const { return id; }
         void *getEntry() const { return entry.ptr; }
@@ -232,7 +233,7 @@ case 5:                                \
         ApiTable api;
 
         union {
-            long *api_version;
+            long *api_version = nullptr;
             module_abi_v1 *v1;
         } mod;
     };

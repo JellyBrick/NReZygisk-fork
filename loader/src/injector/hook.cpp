@@ -81,7 +81,6 @@ struct ZygiskContext {
     } args;
 
     const char *process;
-    list<ZygiskModule> modules;
 
     int pid;
     bitset<FLAG_MAX> flags;
@@ -113,7 +112,6 @@ struct ZygiskContext {
     ~ZygiskContext();
 
     /* Zygisksu changed: Load module fds */
-    bool load_modules_only();
     void run_modules_pre();
     void run_modules_post();
     DCL_PRE_POST(fork)
@@ -139,6 +137,8 @@ struct ZygiskContext {
 
 #undef DCL_PRE_POST
 
+bool load_modules_only();
+
 // Global variables
 vector<tuple<dev_t, ino_t, const char *, void **>> *plt_hook_list;
 map<string, vector<JNINativeMethod>> *jni_hook_list;
@@ -146,8 +146,10 @@ bool should_unmap_zygisk = false;
 bool enable_unloader = false;
 bool hooked_unloader = false;
 bool clean_zygote = false;
+bool modules_loaded = false;
 enum mns_stages mns_stage = MNS_INIT;
 std::vector<lsplt::MapInfo> cached_map_infos = {};
+list<ZygiskModule> modules;
 
 } // namespace
 
@@ -235,21 +237,9 @@ void fork_wait(pid_t pid) {
         return;
     }
     int status;
-    errno = 0;
-    while (true) {
-        pid_t w = waitpid(pid, &status, 0);
-        if (w == -1) {
-            if (errno == EINTR) {
-                errno = 0;
-                continue;
-            } else {
-                PLOGE("fork_wait: waitpid");
-            }
-        } else if (w != pid) {
-            PLOGE("fork_wait: pid %d, wait result %d", pid, w);
-            continue;
-        }
-        return;
+    pid_t w = TEMP_FAILURE_RETRY(waitpid(pid, &status, 0));
+    if (w != pid) {
+        PLOGE("fork_wait: waitpid(%d) = %d", pid, w);
     }
 }
 
@@ -664,6 +654,10 @@ int sigmask(int how, int signum) {
 }
 
 void ZygiskContext::fork_pre() {
+    if (!modules_loaded && access(TMP_PATH "/zygote_dlopen", F_OK) == 0) {
+        load_modules_only();
+    }
+
     /* INFO: Do our own fork before loading any 3rd party code.
              First block SIGCHLD, unblock after original fork is done.
     */
@@ -764,89 +758,18 @@ void ZygiskContext::fork_post() {
     g_ctx = nullptr;
 }
 
-void send_fd(int socket, int fd_to_send) {
-    struct msghdr msg = {};
-    char buf[CMSG_SPACE(sizeof(fd_to_send))] = {0};
-    struct iovec io = {.iov_base = (void *) "FD", .iov_len = 2};
+bool load_modules_only() {
+  if (modules_loaded) {
+      return true;
+  }
 
-    msg.msg_iov = &io;
-    msg.msg_iovlen = 1;
-    msg.msg_control = buf;
-    msg.msg_controllen = sizeof(buf);
+  modules_loaded = true;
 
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(fd_to_send));
-
-    memcpy(CMSG_DATA(cmsg), &fd_to_send, sizeof(fd_to_send));
-
-    if (TEMP_FAILURE_RETRY(sendmsg(socket, &msg, 0)) == -1) {
-        PLOGE("send_fd: sendmsg");
-    }
-}
-
-int recv_fd(int socket) {
-    struct msghdr msg = {};
-    char m_buffer[256];
-    struct iovec io = {.iov_base = m_buffer, .iov_len = sizeof(m_buffer)};
-    char c_buffer[CMSG_SPACE(sizeof(int))] = {0};
-
-    msg.msg_iov = &io;
-    msg.msg_iovlen = 1;
-    msg.msg_control = c_buffer;
-    msg.msg_controllen = sizeof(c_buffer);
-
-    ssize_t n = TEMP_FAILURE_RETRY(recvmsg(socket, &msg, 0));
-    if (n == 0) {
-        LOGE("recv_fd: unexpected EOF");
-        return -1;
-    }
-    if (n == -1) {
-        PLOGE("recv_fd: recvmsg");
-        return -1;
-    }
-
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-    if (!cmsg || cmsg->cmsg_type != SCM_RIGHTS) {
-        LOGE("recv_fd: no fd received");
-        return -1;
-    }
-
-    int fd;
-    memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
-    return fd;
-}
-
-bool ZygiskContext::load_modules_only() {
   struct zygisk_modules ms;
   if (rezygiskd_read_modules(&ms) == false) {
     LOGE("Failed to read modules from zygiskd");
 
     return false;
-  }
-
-
-  int socket = -1;
-  pid_t fork_pid = -1;
-  if (clean_zygote) {
-      if (!is_mounted()) {
-          if ((fork_pid = fork_create(&socket)) == 0) {
-              int my_ns = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
-              if (my_ns == -1) {
-                  PLOGE("load_modules_only: open(/proc/self/ns/mnt)");
-              } else {
-                  send_fd(socket, my_ns);
-                  do_umounts();
-                  TEMP_FAILURE_RETRY(read(socket, &fork_pid, 1));
-              }
-              _exit(0);
-          } else if (fork_pid < 0) {
-              PLOGE("load_modules_only: fork");
-              return false;
-          }
-      }
-      update_mnt_ns(Mounted, false);
   }
 
   for (size_t i = 0; i < ms.modules_count; i++) {
@@ -872,21 +795,6 @@ bool ZygiskContext::load_modules_only() {
   }
 
   free_modules(&ms);
-
-  if (socket > 0) {
-      int clean_ns = recv_fd(socket);
-      if (clean_ns <= 0) {
-          PLOGE("load_modules_only: clean_ns = recv_fd(socket)");
-      } else {
-          if (setns(clean_ns, CLONE_NEWNS) == -1) {
-              PLOGE("load_modules_only: setns(clean_ns [%d], CLONE_NEWNS)", clean_ns);
-          }
-          close(clean_ns);
-      }
-      close(socket);
-      fork_wait(fork_pid);
-  }
-
   return true;
 }
 
@@ -979,6 +887,24 @@ void ZygiskContext::app_specialize_pre() {
             flags[DO_REVERT_UNMOUNT] = true;
         }
 
+        int socket = -1;
+        if (clean_zygote) {
+            if (is_mounted()) {
+                update_mnt_ns(Mounted, false);
+            } else {
+                pid_t fork_pid = fork_create(&socket);
+                if (fork_pid == 0) {
+                    if (fork() == 0) {
+                        do_umounts();
+                        _exit(0);
+                    }
+                    _exit(0);
+                } else {
+                    fork_wait(fork_pid);
+                }
+            }
+        }
+
         /* INFO: Because we load directly from the file, we need to do it before we umount
                    the mounts, or else it won't have access to /data/adb anymore.
         */
@@ -1019,6 +945,12 @@ void ZygiskContext::app_specialize_pre() {
                    application without worrying about it being overwritten by setns.
         */
         run_modules_pre();
+
+        if (socket > 0) {
+            char dummy;
+            TEMP_FAILURE_RETRY(read(socket, &dummy, 1));
+            close(socket);
+        }
 
         /* INFO: The modules may request that although the process is NOT in
                    the DenyList, it has its mount namespace switched to the clean

@@ -94,14 +94,14 @@ char *read_string(int fd) {
   return buf;
 }
 
-#define write_func(type)                    \
-  ssize_t write_## type(int fd, type val) { \
-    return write(fd, &val, sizeof(type));   \
+#define write_func(type)                                        \
+  ssize_t write_## type(int fd, type val) {                     \
+    return TEMP_FAILURE_RETRY(write(fd, &val, sizeof(type)));   \
   }
 
-#define read_func(type)                     \
-  ssize_t read_## type(int fd, type *val) { \
-    return read(fd, val, sizeof(type));     \
+#define read_func(type)                                         \
+  ssize_t read_## type(int fd, type *val) {                     \
+    return TEMP_FAILURE_RETRY(read(fd, val, sizeof(type)));     \
   }
 
 write_func(uint8_t)

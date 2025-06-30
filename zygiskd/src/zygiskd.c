@@ -25,6 +25,7 @@
 struct Module {
   char *name;
   int lib_fd;
+  char *lib_fd_path;
   int companion;
 };
 
@@ -65,6 +66,8 @@ static enum Architecture get_arch(void) {
 static void load_modules(enum Architecture arch, struct Context *restrict context) {
   context->len = 0;
   context->modules = NULL;
+
+  pid_t my_pid = getpid();
 
   DIR *dir = opendir(PATH_MODULES_DIR);
   if (dir == NULL) {
@@ -128,8 +131,12 @@ static void load_modules(enum Architecture arch, struct Context *restrict contex
       return;
     }
 
+    char lib_fd_path[64];
+    snprintf(lib_fd_path, sizeof(lib_fd_path), "/proc/%d/fd/%d", my_pid, lib_fd);
+
     context->modules[context->len].name = strdup(name);
     context->modules[context->len].lib_fd = lib_fd;
+    context->modules[context->len].lib_fd_path = strdup(lib_fd_path);
     context->modules[context->len].companion = -1;
     context->len++;
   }
@@ -140,6 +147,7 @@ static void load_modules(enum Architecture arch, struct Context *restrict contex
 static void free_modules(struct Context *restrict context) {
   for (size_t i = 0; i < context->len; i++) {
     free(context->modules[i].name);
+    free(context->modules[i].lib_fd_path);
     if (context->modules[i].companion != -1) close(context->modules[i].companion);
   }
 }
@@ -548,10 +556,7 @@ void zygiskd_start(char *restrict argv[]) {
         }
 
         for (size_t i = 0; i < clen; i++) {
-          char lib_path[PATH_MAX];
-          snprintf(lib_path, PATH_MAX, "/data/adb/modules/%s/zygisk/%s.so", context.modules[i].name, arch_str);
-
-          if (write_string(client_fd, lib_path) == -1) {
+          if (write_string(client_fd, context.modules[i].lib_fd_path) == -1) {
             LOGE("Failed writing module path.\n");
 
             break;
