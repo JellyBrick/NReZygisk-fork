@@ -203,7 +203,7 @@ bool update_mnt_ns(enum mount_namespace_state mns_state, bool dry_run) {
 pid_t fork_create(int *socket) {
     int sockets[2] = {-1, -1};
     if (socket) {
-        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == -1) {
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == -1) {
             PLOGE("fork_create: socketpair");
             *socket = -1;
             return -1;
@@ -663,6 +663,7 @@ void ZygiskContext::fork_pre() {
     */
     sigmask(SIG_BLOCK, SIGCHLD);
     pid = old_fork();
+    if (pid != 0 && clean_zygote) do_umounts();
     if (pid != 0 || flags[SKIP_FD_SANITIZATION])
         return;
 
@@ -887,21 +888,9 @@ void ZygiskContext::app_specialize_pre() {
             flags[DO_REVERT_UNMOUNT] = true;
         }
 
-        int socket = -1;
         if (clean_zygote) {
             if (is_mounted()) {
                 update_mnt_ns(Mounted, false);
-            } else {
-                pid_t fork_pid = fork_create(&socket);
-                if (fork_pid == 0) {
-                    if (fork() == 0) {
-                        do_umounts();
-                        _exit(0);
-                    }
-                    _exit(0);
-                } else {
-                    fork_wait(fork_pid);
-                }
             }
         }
 
@@ -945,12 +934,6 @@ void ZygiskContext::app_specialize_pre() {
                    application without worrying about it being overwritten by setns.
         */
         run_modules_pre();
-
-        if (socket > 0) {
-            char dummy;
-            TEMP_FAILURE_RETRY(read(socket, &dummy, 1));
-            close(socket);
-        }
 
         /* INFO: The modules may request that although the process is NOT in
                    the DenyList, it has its mount namespace switched to the clean
