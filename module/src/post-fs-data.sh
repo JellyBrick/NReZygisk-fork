@@ -50,7 +50,6 @@ if [ -f $MODDIR/lib/libzygisk.so ];then
   chcon u:object_r:system_file:s0 $TMP_PATH/lib/libzygisk.so
 fi
 
-magiskpolicy --apply sepolicy.rule --live
 
 CPU_ABIS=$(getprop ro.product.cpu.abilist)
 
