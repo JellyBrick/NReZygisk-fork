@@ -834,7 +834,7 @@ void ZygiskContext::run_modules_post() {
             module_addrs[i++] = m.getEntry();
         }
 
-        clean_trace("/data/adb", module_addrs, modules.size(), modules.size(), modules_unloaded, true);
+        clean_trace("/data/adb", module_addrs, modules.size(), modules.size(), modules_unloaded, !is_mounted());
     }
 }
 
@@ -991,6 +991,18 @@ void ZygiskContext::nativeForkSystemServer_pre() {
       return;
 
     mns_stage = MNS_PRE_APP;
+
+    if (clean_zygote) {
+        info_flags = rezygiskd_get_process_flags(1000, "system_server");
+        if ((info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST) {
+            flags[DO_REVERT_UNMOUNT] = true;
+        }
+
+        if (is_mounted()) {
+            update_mnt_ns(Mounted, false);
+        }
+    }
+
     load_modules_only();
     run_modules_pre();
     rezygiskd_system_server_started();
