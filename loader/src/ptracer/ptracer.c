@@ -434,7 +434,13 @@ bool trace_zygote(int pid) {
 
   int status;
 
-  if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL | PTRACE_O_TRACEEXEC | PTRACE_O_TRACESECCOMP) == -1) {
+  bool init_injected = access(TMP_PATH "/inject_init", F_OK) == 0
+                    && access(TMP_PATH "/bad_init_inject", F_OK) != 0;
+
+  int attach_mode = init_injected ? PTRACE_ATTACH : PTRACE_SEIZE;
+  int attach_opts = PTRACE_O_EXITKILL | PTRACE_O_TRACESECCOMP | (init_injected ? 0 : PTRACE_O_TRACEEXEC);
+
+  if (ptrace(attach_mode, pid, 0, attach_opts) == -1) {
     PLOGE("seize");
 
     return false;
@@ -442,7 +448,12 @@ bool trace_zygote(int pid) {
 
   WAIT_OR_DIE
 
-  if (STOPPED_WITH(SIGSTOP, PTRACE_EVENT_STOP)) {
+  if (attach_mode == PTRACE_ATTACH) {
+    CONT_OR_DIE
+    WAIT_OR_DIE
+  }
+
+  if (STOPPED_WITH(SIGSTOP, PTRACE_EVENT_STOP) || STOPPED_WITH(SIGSTOP, 0)) {
     char lib_path[PATH_MAX];
     snprintf(lib_path, sizeof(lib_path), "%s/lib" LP_SELECT("", "64") "/libzygisk.so", rezygiskd_get_path());
 
@@ -481,6 +492,10 @@ bool trace_zygote(int pid) {
 
         ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
       }
+    } else if (STOPPED_WITH(SIGCONT, 0)) {
+      LOGD("received SIGCONT v2");
+      ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
+
     } else {
       char status_str[64];
       parse_status(status, status_str, sizeof(status_str));

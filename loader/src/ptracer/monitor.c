@@ -18,6 +18,8 @@
 #include "daemon.h"
 #include "misc.h"
 #include "breakpoint.h"
+#include "init.h"
+#include "socket_utils.h"
 
 #include "monitor.h"
 
@@ -215,8 +217,9 @@ void rezygiskd_listener_callback() {
       case START: {
         if (tracing_state == STOPPING) tracing_state = TRACING;
         else if (tracing_state == STOPPED) {
-          ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
+          ptrace(PTRACE_SEIZE, 1, 0, init_hooked ? 0 : PTRACE_O_TRACEFORK);
           attr_hook_prepare();
+          init_resume_hooks();
 
           LOGI("start tracing init");
 
@@ -515,8 +518,9 @@ bool sigchld_listener_init() {
     return false;
   }
 
-  ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
+  ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK | PTRACE_O_TRACESYSGOOD);
   attr_hook_prepare();
+  init_inject();
 
   return true;
 }
@@ -559,6 +563,7 @@ void sigchld_listener_callback() {
 
           LOGV("forked %ld", child_pid);
         } else if (STOPPED_WITH(SIGTRAP, PTRACE_EVENT_STOP) && tracing_state == STOPPING) {
+          init_suspend_hooks();
           if (ptrace(PTRACE_DETACH, 1, 0, 0) == -1) PLOGE("failed to detach init");
 
           tracing_state = STOPPED;
@@ -627,13 +632,15 @@ void sigchld_listener_callback() {
 
         ptrace_process:
 
-        ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEEXEC);
+        ptrace(PTRACE_SETOPTIONS, pid, 0, init_hooked ? 0 : PTRACE_O_TRACEEXEC);
         attr_hook_place_first_breakpoint(state);
         ptrace(PTRACE_CONT, pid, 0, 0);
 
         continue;
       } else {
-        if (STOPPED_WITH(SIGTRAP, PTRACE_EVENT_EXEC)) {
+        if (STOPPED_WITH(SIGTRAP, 0) && attr_hook_handle(state)) {
+          continue;
+        } else if ((STOPPED_WITH(SIGTRAP, PTRACE_EVENT_EXEC)) || (init_hooked && (STOPPED_WITH(SIGTRAP, 0)))) {
           char program[PATH_MAX];
           if (get_program(pid, program, sizeof(program)) == -1) {
             LOGW("failed to get program %d", pid);
@@ -655,6 +662,7 @@ void sigchld_listener_callback() {
             PRE_INJECT(32, false)
 
             if (tracer != NULL) {
+              init_went_well();
               LOGD("stopping %d", pid);
 
               kill(pid, SIGSTOP);
@@ -688,8 +696,6 @@ void sigchld_listener_callback() {
           } while (false);
 
           update_status(NULL);
-        } else if (STOPPED_WITH(SIGTRAP, 0) && attr_hook_handle(state)) {
-          continue;
         } else {
           char status_str[64];
           parse_status(sigchld_status, status_str, sizeof(status_str));
@@ -850,6 +856,23 @@ static bool prepare_environment() {
   return update_status(NULL);
 }
 
+void init_listener_callback() {
+    pid_t new_pid;
+    if (read_n(init_sock, &new_pid, sizeof(new_pid)) != sizeof(new_pid)) {
+        PLOGE("init_listener_callback: read");
+        return;
+    }
+
+    if (ptrace(PTRACE_ATTACH, new_pid, 0, 0) == -1) {
+        PLOGE("init_listener_callback: ptrace");
+    }
+
+    char dummy = 0;
+    write_n(init_sock, &dummy, sizeof(dummy));
+}
+
+void init_listener_stop() {}
+
 void init_monitor(int ready_fd) {
   LOGI("ReZygisk %s", ZKSU_VERSION);
 
@@ -885,6 +908,15 @@ void init_monitor(int ready_fd) {
   }
 
   monitor_events_register_event(&sigchld_cbs, sigchld_signal_fd, EPOLLIN | EPOLLET);
+
+  if (init_sock > 0) {
+      struct monitor_event_cbs init_cbs = {
+              .callback = init_listener_callback,
+              .stop_callback = init_listener_stop
+      };
+      monitor_events_register_event(&init_cbs, init_sock, EPOLLIN | EPOLLET);
+  }
+
   close(ready_fd);
 
   monitor_events_loop();

@@ -191,8 +191,6 @@ bool attr_hook_handle(struct init_fork *proc) {
     }
 
     if (((void*) regs.REG_IP) != proc->next_breakpoint) {
-        LOGE("attr_hook_handle: SIGTRAP @ %p, bp @ %p", (void*) regs.REG_IP, proc->next_breakpoint);
-        setexeccon_addr = 0;
         return false;
     }
 

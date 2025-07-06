@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+ssize_t read_n(int fd, void *buf, size_t n);
+ssize_t write_n(int fd, const void *buf, size_t n);
+
 int read_fd(int fd);
 
 ssize_t write_string(int fd, const char *str);

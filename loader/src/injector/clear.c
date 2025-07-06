@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <sys/ptrace.h>
 
 #include "logging.h"
 
@@ -31,8 +33,40 @@ static bool seccomp_filters_visible() {
     return false;
 }
 
+static bool has_ptrace_message() {
+    int pipefd[2];
+    int status;
+    pipe(pipefd);
+    pid_t outer_pid = fork();
+    if (outer_pid == 0) {
+        close(pipefd[0]);
+        pid_t inner_pid = fork();
+        if (inner_pid == 0) {
+            ptrace(PTRACE_ATTACH, getppid(), 0, 0);
+            TEMP_FAILURE_RETRY(waitpid(getppid(), &status, 0));
+            unsigned long msg = 0;
+            ptrace(PTRACE_GETEVENTMSG, getppid(), 0, &msg);
+            char result = msg != 0 ? 1 : 0;
+            TEMP_FAILURE_RETRY(write(pipefd[1], &result, 1));
+            _exit(0);
+        }
+        TEMP_FAILURE_RETRY(waitpid(inner_pid, &status, 0));
+        _exit(0);
+    }
+    close(pipefd[1]);
+    char result = 1;
+    TEMP_FAILURE_RETRY(read(pipefd[0], &result, 1));
+    TEMP_FAILURE_RETRY(waitpid(outer_pid, &status, 0));
+    close(pipefd[0]);
+    return result;
+}
+
 void send_seccomp_event() {
     if (seccomp_filters_visible()) {
+        return;
+    }
+
+    if (!has_ptrace_message()) {
         return;
     }
 

@@ -392,7 +392,23 @@ uintptr_t push_string(int pid, struct user_regs_struct *regs, const char *str) {
   return addr;
 }
 
+void get_sec_con(pid_t pid, char *buffer, size_t buf_size) {
+  char path[64];
+  snprintf(path, sizeof(path), "/proc/%d/attr/current", pid);
+  buffer[0] = 0;
+
+  FILE *fp = fopen(path, "r");
+  if (!fp) return;
+
+  size_t read_size = fread(buffer, 1, buf_size - 1, fp);
+  buffer[read_size] = 0;
+  fclose(fp);
+}
+
 uintptr_t remote_call(int pid, struct user_regs_struct *regs, uintptr_t func_addr, uintptr_t return_addr, long *args, size_t args_size) {
+  char sec_con[128];
+  get_sec_con(pid, sec_con, sizeof(sec_con));
+
   align_stack(regs, 0);
 
   LOGV("calling remote function %" PRIxPTR " args %zu", func_addr, args_size);
@@ -490,7 +506,15 @@ uintptr_t remote_call(int pid, struct user_regs_struct *regs, uintptr_t func_add
 
   if (WIFSTOPPED(status) && (status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXEC << 8)))) {
     return (uintptr_t) &execve;
-  } else if (WSTOPSIG(status) == SIGSEGV) {
+  }
+  if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
+    char new_sec_con[128];
+    get_sec_con(pid, new_sec_con, sizeof(new_sec_con));
+    if (strcmp(sec_con, new_sec_con) != 0) {
+      return (uintptr_t) &execve;
+    }
+  }
+  if (WSTOPSIG(status) == SIGSEGV) {
     if ((uintptr_t)regs->REG_IP != return_addr) {
       LOGE("wrong return addr %p", (void *) regs->REG_IP);
 
