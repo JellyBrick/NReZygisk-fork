@@ -8,6 +8,8 @@
 
 #include <unistd.h>
 
+#include "xz.h"
+
 #ifdef __LP64__
   #define LOG_TAG "zygisk-elfutil64"
 #else
@@ -137,9 +139,15 @@ void ElfImg_destroy(ElfImg *img) {
     img->header = NULL;
   }
 
+  if (img->gnu_debugdata) {
+    ElfImg_destroy(img->gnu_debugdata);
+    img->gnu_debugdata = NULL;
+  }
+
   free(img);
 }
 
+static ElfImg *ElfImg_init(ElfImg *img);
 
 ElfImg *ElfImg_create(const char *elf, void *base) {
   ElfImg *img = (ElfImg *)calloc(1, sizeof(ElfImg));
@@ -220,6 +228,13 @@ ElfImg *ElfImg_create(const char *elf, void *base) {
     return NULL;
   }
 
+  return ElfImg_init(img);
+}
+
+
+static ElfImg *ElfImg_init(ElfImg *img) {
+  const char *elf = img->elf;
+
   if (memcmp(img->header->e_ident, ELFMAG, SELFMAG) != 0) {
     LOGE("Invalid ELF header for %s", elf);
 
@@ -286,7 +301,13 @@ ElfImg *ElfImg_create(const char *elf, void *base) {
           break;
         }
         case SHT_STRTAB: break;
-        case SHT_PROGBITS: break;
+        case SHT_PROGBITS: {
+            if (strcmp(sname, ".gnu_debugdata") == 0) {
+                img->gnu_debugdata_start = offsetOf_char(img->header, section_h->sh_offset);
+                img->gnu_debugdata_size = section_h->sh_size;
+            }
+            break;
+        }
         case SHT_HASH: {
           ElfW(Word) *d_un = offsetOf_Word(img->header, section_h->sh_offset);
 
@@ -455,6 +476,37 @@ ElfImg *ElfImg_create(const char *elf, void *base) {
     LOGW("No hash table (.gnu.hash or .hash) found in %s. Dynamic symbol lookup might be slow or fail.", elf);
 
   return img;
+}
+
+static char *xz_decompress_buffer(const char *input, size_t input_size, size_t *output_size);
+
+ElfImg *ElfImg_loadGnuDebugdata(ElfImg *img) {
+    if (img->gnu_debugdata) return img->gnu_debugdata;
+    if (!img->gnu_debugdata_start) return NULL;
+
+    ElfImg *gnu = calloc(1, sizeof(ElfImg));
+    if (!gnu) return NULL;
+
+    size_t size;
+    gnu->header = (ElfW(Ehdr) *) xz_decompress_buffer(img->gnu_debugdata_start, img->gnu_debugdata_size, &size);
+    gnu->size = size;
+    gnu->elf = strdup("gnu_debugdata");
+    gnu->base = img->base;
+
+    if (!gnu->header) {
+        LOGE("ElfImg_loadGnuDebugdata: failed to decompress");
+        ElfImg_destroy(gnu);
+        return NULL;
+    }
+
+    gnu = ElfImg_init(gnu);
+    if (!gnu) {
+        LOGE("ElfImg_loadGnuDebugdata: failed to parse");
+        return NULL;
+    }
+
+    img->gnu_debugdata = gnu;
+    return gnu;
 }
 
 bool _load_symtabs(ElfImg *img) {
@@ -711,4 +763,58 @@ void *getSymbValueByPrefix(ElfImg *img, const char *prefix) {
   ElfW(Addr) address = getSymbAddressByPrefix(img, prefix);
 
   return address == 0 ? NULL : *((void **)address);
+}
+
+static char *xz_decompress_buffer(const char *input, size_t input_size, size_t *output_size) {
+    xz_crc32_init();
+    xz_crc64_init();
+
+    struct xz_dec *dec = xz_dec_init(XZ_DYNALLOC, 1 << 26);
+    if (!dec) {
+        PLOGE("xz_decompress_buffer: xz_dec_init");
+        return NULL;
+    }
+
+    struct xz_buf b;
+    memset(&b, 0, sizeof(b));
+
+    b.in = (const uint8_t *)input;
+    b.in_size = input_size;
+
+    b.out_size = sysconf(_SC_PAGESIZE);
+    b.out = mmap(NULL, b.out_size, PROT_READ | PROT_WRITE,
+                           MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (b.out == MAP_FAILED) {
+        PLOGE("xz_decompress_buffer: mmap");
+        xz_dec_end(dec);
+        return NULL;
+    }
+
+    while (1) {
+        enum xz_ret ret = xz_dec_run(dec, &b);
+
+        if (ret == XZ_STREAM_END) break;
+        if (ret != XZ_OK) {
+            LOGE("xz_decompress_buffer: xz returned %d", ret);
+            munmap(b.out, b.out_size);
+            xz_dec_end(dec);
+            return NULL;
+        }
+
+        void *new_output = mremap(b.out, b.out_size, b.out_size * 2, MREMAP_MAYMOVE);
+        if (new_output == MAP_FAILED) {
+            PLOGE("xz_decompress_buffer: mremap");
+            munmap(b.out, b.out_size);
+            xz_dec_end(dec);
+            return NULL;
+        }
+
+        b.out = new_output;
+        b.out_size *= 2;
+    }
+
+    void *shrink = mremap(b.out, b.out_size, b.out_pos, MREMAP_MAYMOVE);
+    *output_size = b.out_pos;
+    xz_dec_end(dec);
+    return (char *) (shrink != MAP_FAILED ? shrink : b.out);
 }

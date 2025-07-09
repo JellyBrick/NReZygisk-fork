@@ -86,6 +86,17 @@ struct monitor_event_cbs {
   void (*stop_callback)();
 };
 
+void stop_tracing(const char *msg) {
+  strcpy(monitor_stop_reason, msg);
+  if (init_hooked) {
+    init_suspend_hooks();
+    tracing_state = STOPPED;
+  } else {
+    tracing_state = STOPPING;
+    ptrace(PTRACE_INTERRUPT, 1, 0, 0);
+  }
+}
+
 bool monitor_events_register_event(struct monitor_event_cbs *event_cbs, int fd, uint32_t events) {
   struct epoll_event ev = {
     .data.ptr = event_cbs,
@@ -217,9 +228,9 @@ void rezygiskd_listener_callback() {
       case START: {
         if (tracing_state == STOPPING) tracing_state = TRACING;
         else if (tracing_state == STOPPED) {
-          ptrace(PTRACE_SEIZE, 1, 0, init_hooked ? 0 : PTRACE_O_TRACEFORK);
-          attr_hook_prepare();
-          init_resume_hooks();
+          if (!init_resume_hooks()) {
+            ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
+          }
 
           LOGI("start tracing init");
 
@@ -234,10 +245,8 @@ void rezygiskd_listener_callback() {
         if (tracing_state == TRACING) {
           LOGI("stop tracing requested");
 
-          tracing_state = STOPPING;
-          strcpy(monitor_stop_reason, "user requested");
+          stop_tracing("user requested");
 
-          ptrace(PTRACE_INTERRUPT, 1, 0, 0);
           update_status(NULL);
         }
 
@@ -474,18 +483,14 @@ static bool ensure_daemon_created(bool is_64bit) {
     if (state->stop != -1 ? state->stop : should_stop_inject ## abi()) {               \
       LOGW("zygote" # abi " restart too much times, stop injecting");                  \
                                                                                        \
-      tracing_state = STOPPING;                                                        \
-      memcpy(monitor_stop_reason, "zygote crashed", sizeof("zygote crashed"));         \
-      ptrace(PTRACE_INTERRUPT, 1, 0, 0);                                               \
+      stop_tracing("zygote crashed");                                                  \
                                                                                        \
       break;                                                                           \
     }                                                                                  \
     if (!ensure_daemon_created(is_64)) {                                               \
       LOGW("daemon" #abi " not running, stop injecting");                              \
                                                                                        \
-      tracing_state = STOPPING;                                                        \
-      memcpy(monitor_stop_reason, "daemon not running", sizeof("daemon not running")); \
-      ptrace(PTRACE_INTERRUPT, 1, 0, 0);                                               \
+      stop_tracing("daemon not running");                                              \
                                                                                        \
       break;                                                                           \
     }                                                                                  \
@@ -551,7 +556,7 @@ void sigchld_listener_callback() {
     int pid;
     while ((pid = waitpid(-1, &sigchld_status, __WALL | WNOHANG)) != 0) {
       if (pid == -1) {
-        if (tracing_state == STOPPED && errno == ECHILD) break;
+        if ((tracing_state == STOPPED || init_hooked) && errno == ECHILD) break;
         PLOGE("waitpid");
       }
 
@@ -564,7 +569,7 @@ void sigchld_listener_callback() {
           LOGV("forked %ld", child_pid);
         } else if (STOPPED_WITH(SIGTRAP, PTRACE_EVENT_STOP) && tracing_state == STOPPING) {
           init_suspend_hooks();
-          if (ptrace(PTRACE_DETACH, 1, 0, 0) == -1) PLOGE("failed to detach init");
+          if (!init_hooked && ptrace(PTRACE_DETACH, 1, 0, 0) == -1) PLOGE("failed to detach init");
 
           tracing_state = STOPPED;
 
@@ -863,7 +868,7 @@ void init_listener_callback() {
         return;
     }
 
-    if (ptrace(PTRACE_ATTACH, new_pid, 0, 0) == -1) {
+    if (tracing_state == TRACING && ptrace(PTRACE_ATTACH, new_pid, 0, 0) == -1) {
         PLOGE("init_listener_callback: ptrace");
     }
 

@@ -240,6 +240,7 @@ static inline long raw_syscall3(long n, long a1, long a2, long a3) { _RAW_SYSCAL
 static inline long raw_syscall4(long n, long a1, long a2, long a3, long a4) { _RAW_SYSCALL_BODY(n, a1, a2, a3, a4, 0, 0); }
 static inline long raw_syscall5(long n, long a1, long a2, long a3, long a4, long a5) { _RAW_SYSCALL_BODY(n, a1, a2, a3, a4, a5, 0); }
 static inline long raw_syscall6(long n, long a1, long a2, long a3, long a4, long a5, long a6) { _RAW_SYSCALL_BODY(n, a1, a2, a3, a4, a5, a6); }
+#undef _RAW_SYSCALL_BODY
 
 #elif defined(__arm__)
 
@@ -276,12 +277,24 @@ static inline long raw_syscall3(long n, long a1, long a2, long a3) { _RAW_SYSCAL
 static inline long raw_syscall4(long n, long a1, long a2, long a3, long a4) { _RAW_SYSCALL_BODY(n, a1, a2, a3, a4, 0, 0); }
 static inline long raw_syscall5(long n, long a1, long a2, long a3, long a4, long a5) { _RAW_SYSCALL_BODY(n, a1, a2, a3, a4, a5, 0); }
 static inline long raw_syscall6(long n, long a1, long a2, long a3, long a4, long a5, long a6) { _RAW_SYSCALL_BODY(n, a1, a2, a3, a4, a5, a6); }
+#undef _RAW_SYSCALL_BODY
 
 #else
 
 #error "Unsupported architecture for raw syscalls."
 
 #endif
+
+#define PTRTOL(t, v) ({ t *_p = (v); (long) _p; })
+#define raw_read(a, b, c) raw_syscall3(__NR_read, a, PTRTOL(void, b), c)
+#define raw_write(a, b, c) raw_syscall3(__NR_write, a, PTRTOL(const void, b), c)
+#define raw_sendmsg(a, b, c) raw_syscall3(__NR_sendmsg, a, PTRTOL(const struct msghdr, b), c)
+#define raw_gettid() raw_syscall0(__NR_gettid)
+#define raw_pipe2(a, b) raw_syscall2(__NR_pipe2, PTRTOL(int, a), b)
+#define raw_close(a) raw_syscall1(__NR_close, a)
+#define raw_socketpair(a, b, c, d) raw_syscall4(__NR_socketpair, a, b, c, PTRTOL(int, d))
+#define raw_socket(a, b, c) raw_syscall3(__NR_socket, a, b, c)
+#define raw_connect(a, b, c) raw_syscall3(__NR_connect, a, PTRTOL(const void, b), c)
 
 #define RAW_TEMP_FAILURE_RETRY(exp) ({     \
     __typeof__(exp) _rc;                   \
@@ -304,7 +317,7 @@ static void *raw_memcpy(void *dest, const void *src, unsigned long n) {
 static ssize_t raw_read_n(int fd, void *buf, size_t n) {
     size_t total = 0;
     while (total < n) {
-        ssize_t r = RAW_TEMP_FAILURE_RETRY(raw_syscall3(__NR_read, fd, (long)buf + total, n - total));
+        ssize_t r = RAW_TEMP_FAILURE_RETRY(raw_read(fd, buf + total, n - total));
         if (r <= 0) return r;
         total += r;
     }
@@ -315,7 +328,7 @@ static ssize_t raw_read_n(int fd, void *buf, size_t n) {
 static ssize_t raw_write_n(int fd, const void *buf, size_t n) {
     size_t total = 0;
     while (total < n) {
-        ssize_t w = RAW_TEMP_FAILURE_RETRY(raw_syscall3(__NR_write, fd, (long)buf + total, n - total));
+        ssize_t w = RAW_TEMP_FAILURE_RETRY(raw_write(fd, buf + total, n - total));
         if (w <= 0) return w;
         total += w;
     }
@@ -342,7 +355,7 @@ static long raw_send_fd(int socket, int fd_to_send) {
 
     raw_memcpy(CMSG_DATA(cmsg), &fd_to_send, sizeof(fd_to_send));
 
-    return RAW_TEMP_FAILURE_RETRY(raw_syscall3(__NR_sendmsg, socket, (long) &msg, 0));
+    return RAW_TEMP_FAILURE_RETRY(raw_sendmsg(socket, &msg, 0));
 }
 
 #ifdef __cplusplus

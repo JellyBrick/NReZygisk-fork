@@ -8,7 +8,7 @@ extern bool init_hooked;
 extern int init_sock;
 void init_inject();
 void init_suspend_hooks();
-void init_resume_hooks();
+bool init_resume_hooks();
 void init_went_well();
 
 

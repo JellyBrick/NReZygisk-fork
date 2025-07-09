@@ -13,7 +13,7 @@ struct symtabs {
   ElfW(Sym) *sym;
 };
 
-typedef struct {
+typedef struct ElfImg {
   char *elf;
   void *base;
   ElfW(Ehdr) *header;
@@ -48,11 +48,17 @@ typedef struct {
   ElfW(Off) symstr_offset_for_symtab;
 
   struct symtabs *symtabs_;
+
+  const char *gnu_debugdata_start;
+  size_t gnu_debugdata_size;
+  struct ElfImg *gnu_debugdata;
 } ElfImg;
 
 void ElfImg_destroy(ElfImg *img);
 
 ElfImg *ElfImg_create(const char *elf, void *base);
+
+ElfImg *ElfImg_loadGnuDebugdata(ElfImg *img);
 
 ElfW(Addr) ElfLookup(ElfImg *restrict img, const char *restrict name, uint32_t hash);
 

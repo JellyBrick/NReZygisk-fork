@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <linux/un.h>
+#include <linux/prctl.h>
 
 #include "utils.h"
 #include "breakpoint.h"
@@ -36,6 +37,8 @@ static void *lib_init_is_unhooked;
 static void *exe_local_base;
 /* INFO: Start address of /system/bin/init in init address space */
 static void *exe_init_base;
+/* INFO: Address of pthread_atfork in init address space */
+static void *exe_pthread_atfork;
 
 /* INFO: Socket where our init hook will send events to us */
 int init_sock = -1;
@@ -86,7 +89,7 @@ static void init_wait_for_syscall(const char *tag, int line, pid_t pid) {
 
 static void init_cont_to_syscall(const char *tag, int line, pid_t pid) {
     if (ptrace(PTRACE_SYSCALL, pid, 0, 0) == -1) {
-        PLOGE("init_step_syscall @ %s/%d: ptrace(PTRACE_SYSCALL, %d)", tag, line, pid);
+        PLOGE("init_cont_to_syscall @ %s/%d: ptrace(PTRACE_SYSCALL, %d)", tag, line, pid);
         exit(1);
     }
 }
@@ -183,12 +186,11 @@ static void init_to_sys_entry(pid_t pid, struct user_regs_struct *oregs) {
     STEP_SYSCALL(pid);
 
     if (!get_regs(pid, oregs)) {
-        PLOGE("init_to_sys_entry: get_regs(1, oregs)");
+        PLOGE("init_to_sys_entry: get_regs(%d, oregs)", pid);
         exit(1);
     }
 
     if (oregs->REG_SYSNR == __NR_restart_syscall) {
-        /* INFO: Now init is likely blocked in a syscall (e.g. waitpid), waiting for us */
         /* INFO: Resume the syscall and try to abort it */
         CONT_TO_SYSCALL(pid);
         /* INFO: This might abort the syscall with EINTR */
@@ -199,26 +201,28 @@ static void init_to_sys_entry(pid_t pid, struct user_regs_struct *oregs) {
         STEP_SYSCALL(pid);
 
         if (!get_regs(pid, oregs)) {
-            PLOGE("init_to_sys_entry: get_regs(1, oregs)");
+            PLOGE("init_to_sys_entry: get_regs(%d, oregs)", pid);
             exit(1);
         }
     }
 
     /* INFO: The ip points to the insn after the syscall insn, move it back to the syscall insn */
-    oregs->REG_IP -= SYSCALL_LEN;
+    oregs->REG_IP -= SYSCALL_LEN(oregs);
 }
 
 /* INFO: Returns the address of the PLT entry of the given function (in init address space) */
 static void *init_exe_plt(const char *name) {
+    if (!elfplt_exe || !exe_local_base || !exe_init_base) return NULL;
     unsigned long local = (unsigned long) elfplt_addr(elfplt_exe, name);
-    if (!local) return 0;
+    if (!local) return NULL;
     return (void *) (local - (unsigned long) exe_local_base + (unsigned long) exe_init_base);
 }
 
 /* INFO: Returns the address of the given libzygisk.so symbol (in init address space) */
 static void *init_lib_symbol(const char *name) {
+    if (!elf_lib || !lib_local_base || !lib_init_base) return NULL;
     unsigned long local = getSymbAddress(elf_lib, name);
-    if (!local) return 0;
+    if (!local) return NULL;
     return (void *) (local - (unsigned long) lib_local_base + (unsigned long) lib_init_base);
 }
 
@@ -266,9 +270,16 @@ static void init_apply_hooks() {
     }
 
     init_hooked = true;
+
+    if (exe_pthread_atfork) {
+        /* INFO: pthread_atfork method is used instead of PLT hook for statically linked init */
+        return;
+    }
+
 #define APPLY_INIT_HOOK(n) if (!init_apply_hook(#n, "init_new_" #n, "init_old_" #n)) init_hooked = false;
     APPLY_INIT_HOOK(fork)
 #undef APPLY_INIT_HOOK
+
 
     bool is_unhooked = !init_hooked;
     write_proc(1, (uintptr_t) lib_init_is_unhooked, &is_unhooked, sizeof(is_unhooked));
@@ -300,6 +311,10 @@ static bool init_map_lib() {
 }
 
 static bool init_map_exe() {
+    exe_local_base = NULL;
+    exe_init_base = NULL;
+    exe_pthread_atfork = NULL;
+
     char exe_path[128];
     ssize_t ps = readlink("/proc/1/exe", exe_path, sizeof(exe_path) - 1);
     if (ps < 0) {
@@ -314,7 +329,6 @@ static bool init_map_exe() {
         return false;
     }
 
-    exe_init_base = 0;
     for (size_t i = 0; i < init_maps->size; ++i) {
         struct map *m = &init_maps->maps[i];
         if (m->offset == 0 && strcmp(m->path, exe_path) == 0) {
@@ -346,16 +360,39 @@ static bool init_map_exe() {
     close(exe_fd);
 
     if (exe_local_base == MAP_FAILED) {
-        PLOGE("init_map_exe: mmap(MAP_ANON)");
+        PLOGE("init_map_exe: mmap");
+        exe_local_base = NULL;
         return false;
     }
 
     elfplt_exe = elfplt_init((uintptr_t) exe_local_base);
-    if (!elfplt_exe) {
-        PLOGE("init_map_exe: elfplt_init(exe_path)");
+    if (elfplt_exe) {
+        return true;
+    }
+
+    PLOGE("init_map_exe: elfplt_init(exe_local_base)");
+
+    ElfImg *elf_exe = ElfImg_create("/proc/1/exe", exe_init_base);
+    if (!elf_exe) {
+        PLOGE("init_map_exe: ELfImg_create");
         return false;
     }
 
+    ElfImg *debug_exe = ElfImg_loadGnuDebugdata(elf_exe);
+    if (!debug_exe) {
+        PLOGE("init_map_exe: ElfImg_loadGnuDebugdata");
+        ElfImg_destroy(elf_exe);
+        return false;
+    }
+
+    exe_pthread_atfork = (void *) getSymbAddress(debug_exe, "pthread_atfork");
+    if (!exe_pthread_atfork) {
+        PLOGE("init_map_exe: getSymbAddress(pthread_atfork)");
+        ElfImg_destroy(elf_exe);
+        return false;
+    }
+
+    ElfImg_destroy(elf_exe);
     return true;
 }
 
@@ -408,8 +445,9 @@ static bool init_call_entry(struct user_regs_struct *oregs) {
     }
     STEP_SYSCALL(1);
 
-    long args[0];
-    int ret = (int) remote_call(1, &regs, (uintptr_t) entry, 0, args, 0);
+    long args[1];
+    args[0] = (long) exe_pthread_atfork;
+    int ret = (int) remote_call(1, &regs, (uintptr_t) entry, 0, args, 1);
 
     /* INFO: Now we restore the registers and return to syscall enter stop */
     if (!set_regs(1, oregs)) {
@@ -457,65 +495,65 @@ static void init_elf_size(ElfImg *img, size_t *out_size, size_t *out_min) {
     *out_min = min_addr;
 }
 
-static bool init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfImg *img) {
+static void* init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfImg *img) {
 
-#define SYSCALL(n, a, b, c, d, e, f) ({\
-    long _r = init_syscall(pid, oregs, SYS_##n, (long)a,(long)b,(long)c,(long)d,(long)e,(long)f);\
-    if (_r < 0) {\
+#define REMOTE_SYSCALL(n, a, b, c, d, e, f) ({\
+    long _r = init_syscall(pid, oregs, n, (long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f));\
+    if (((unsigned long)(_r) >= (unsigned long)(-4095)) && n != SYS_prctl) {\
         LOGE("init_elf_map_remote (%d): " #n "() = %ld", __LINE__, _r);\
-        return false;\
+        return NULL;\
     }\
     _r; })
 
 #ifdef SYS_mmap
-#define SYS_mmap_ SYS_mmap
-#define MMAP_OFF_SHIFT 0
+#define REMOTE_MMAP(a, b, c, d, e, f) REMOTE_SYSCALL(SYS_mmap, a, b, c, d, e, f)
 #else
-#define SYS_mmap_ SYS_mmap2
-#define MMAP_OFF_SHIFT 12
+#define REMOTE_MMAP(a, b, c, d, e, f) REMOTE_SYSCALL(SYS_mmap2, a, b, c, d, e, (f) / 4096)
 #endif
 
     long remote_path = oregs->REG_SP + 256;
     write_proc(pid, remote_path, img->elf, strlen(img->elf) + 1);
 
-    long fd = SYSCALL(openat, AT_FDCWD, remote_path, O_RDONLY | O_CLOEXEC, 0, 0, 0);
+    long fd = REMOTE_SYSCALL(SYS_openat, AT_FDCWD, remote_path, O_RDONLY | O_CLOEXEC, 0, 0, 0);
 
     size_t so_size;
     size_t so_min;
     init_elf_size(img, &so_size, &so_min);
 
-    size_t so_addr = SYSCALL(mmap_, 0, so_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, 0, 0);
-    lib_init_base = (void *) so_addr;
+    size_t so_addr = REMOTE_MMAP(0, so_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, 0, 0);
 
     size_t align = sysconf(_SC_PAGE_SIZE);
 
     ElfW(Phdr) *phdr = (ElfW(Phdr) *)((uintptr_t)img->header + img->header->e_phoff);
-    for (int i = 0; i < img->header->e_phnum; ++i) {
-        ElfW(Phdr) *h = &phdr[i];
-        if (h->p_type == PT_LOAD) {
-            long perms = 0;
-            if (h->p_flags & PF_R) perms |= PROT_READ;
-            if (h->p_flags & PF_W) perms |= PROT_WRITE;
-            if (h->p_flags & PF_X) perms |= PROT_EXEC;
-            long flags = MAP_FIXED | MAP_PRIVATE;
+    for (int f = 0; f <= 1; ++f) {
+        for (int i = 0; i < img->header->e_phnum; ++i) {
+            ElfW(Phdr) *h = &phdr[i];
+            if (h->p_type == PT_LOAD) {
+                long perms = 0;
+                if (h->p_flags & PF_R) perms |= PROT_READ;
+                if (h->p_flags & PF_W) perms |= PROT_WRITE;
+                if (h->p_flags & PF_X) perms |= PROT_EXEC;
 
-            if (h->p_memsz > h->p_filesz) {
-                size_t start = (h->p_vaddr + h->p_filesz + so_addr - so_min) & ~(align - 1);
-                size_t size = h->p_memsz - h->p_filesz;
-                SYSCALL(mmap_, start, size, perms, flags | MAP_ANON, -1, 0);
-            }
+                long flags = MAP_FIXED | MAP_PRIVATE;
+                size_t start = (h->p_vaddr & ~(align - 1)) + so_addr - so_min;
+                size_t pad = h->p_vaddr - (h->p_vaddr & ~(align - 1));
 
-            if (h->p_filesz > 0) {
-                size_t start = (h->p_vaddr + so_addr - so_min) & ~(align - 1);
-                size_t off = (h->p_offset & ~(align - 1)) >> MMAP_OFF_SHIFT;
-                size_t size = h->p_filesz;
-                SYSCALL(mmap_, start, size, perms, flags, fd, off);
+                if (!f && h->p_memsz > h->p_filesz) {
+                    REMOTE_MMAP(start, h->p_memsz + pad, perms, flags | MAP_ANON, -1, 0);
+
+                    write_proc(pid, remote_path, ".bss", strlen(".bss") + 1);
+                    REMOTE_SYSCALL(SYS_prctl, PR_SET_VMA, PR_SET_VMA_ANON_NAME, start, h->p_memsz + pad, remote_path, 0);
+                }
+
+                if (f && h->p_filesz > 0) {
+                    REMOTE_MMAP(start, h->p_filesz + pad, perms, flags, fd, h->p_offset & ~(align - 1));
+                }
             }
         }
     }
 
-    SYSCALL(close, fd, 0, 0, 0, 0, 0);
-    return true;
+    REMOTE_SYSCALL(SYS_close, fd, 0, 0, 0, 0, 0);
+    return (void *) so_addr;
 }
 
 void init_inject() {
@@ -542,7 +580,8 @@ void init_inject() {
     init_to_sys_entry(1, &oregs);
 
     /* INFO: Map libzygisk.so into address space of init */
-    if (!init_elf_map_remote(1, &oregs, elf_lib)) {
+    lib_init_base = init_elf_map_remote(1, &oregs, elf_lib);
+    if (!lib_init_base) {
         ptrace(PTRACE_CONT, 1, 0, 0);
         return;
     }
@@ -555,11 +594,11 @@ void init_inject() {
     init_apply_hooks();
     init_injected = true;
     if (init_hooked) {
-        /* INFO: Disable TRACEFORK option, as we have now hooked fork() in init */
-        ptrace(PTRACE_SETOPTIONS, 1, 0, PTRACE_O_TRACESYSGOOD);
+        /* INFO: We can now detach from init, we will be notified of children through init_sock */
+        ptrace(PTRACE_DETACH, 1, 0, 0);
+    } else {
+        ptrace(PTRACE_CONT, 1, 0, 0);
     }
-
-    ptrace(PTRACE_CONT, 1, 0, 0);
 }
 
 void init_went_well() {
@@ -568,11 +607,17 @@ void init_went_well() {
     }
 }
 
-void init_resume_hooks() {
-    if (!init_hooked) return;
+bool init_resume_hooks() {
+    if (!init_hooked) return false;
 
     bool new = false;
-    write_proc(1, (uintptr_t) lib_init_is_unhooked, &new, sizeof(new));
+    if (write_proc(1, (uintptr_t) lib_init_is_unhooked, &new, sizeof(new)) != sizeof(new)) {
+        PLOGE("init_resume_hooks: write_proc");
+        init_hooked = false;
+        return false;
+    }
+
+    return true;
 }
 
 void init_suspend_hooks() {

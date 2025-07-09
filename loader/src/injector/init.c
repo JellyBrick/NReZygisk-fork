@@ -28,51 +28,83 @@
 
 EXPORT volatile bool init_is_unhooked;
 
-int init_sock;
-struct sockaddr_un init_sock_addr = {
+static int init_sock;
+static struct sockaddr_un init_sock_addr = {
         .sun_family = AF_UNIX,
         .sun_path = "/data/adb/rezygisk/init_con.sock\0"
 };
 
 DCL_HOOK_FUNC(pid_t, fork) {
-    if (init_is_unhooked || raw_syscall0(__NR_gettid) != 1) {
+    if (init_is_unhooked || raw_gettid() != 1) {
         return init_old_fork();
     }
 
     char dummy = 0;
-    int pipefd[2];
-    raw_syscall2(__NR_pipe2, (long) pipefd, O_CLOEXEC);
+    int pipefd[2] = {-1};
+    raw_pipe2(pipefd, O_CLOEXEC);
 
     pid_t new_pid = init_old_fork();
 
     if (new_pid == 0) {
-        raw_syscall1(__NR_close, pipefd[1]);
+        raw_close(pipefd[1]);
         raw_read_n(pipefd[0], &dummy, 1);
-        raw_syscall1(__NR_close, pipefd[0]);
+        raw_close(pipefd[0]);
+        raw_close(init_sock);
     } else {
-        raw_syscall1(__NR_close, pipefd[0]);
+        raw_close(pipefd[0]);
         raw_write_n(init_sock, &new_pid, sizeof(new_pid));
         raw_read_n(init_sock, &dummy, 1);
         raw_write_n(pipefd[1], &dummy, 1);
-        raw_syscall1(__NR_close, pipefd[1]);
+        raw_close(pipefd[1]);
     }
 
     return new_pid;
 }
 
-EXPORT int init_entry() {
+static int init_fork_pipe[2];
+
+static void init_atfork_prepare() {
+    init_fork_pipe[0] = -1;
+    if (init_is_unhooked || raw_gettid() != 1) return;
+    raw_pipe2(init_fork_pipe, O_CLOEXEC);
+}
+
+static void init_atfork_parent() {
+    if (init_fork_pipe[0] < 0) return;
+    raw_close(init_fork_pipe[0]);
+
+    char dummy;
+    raw_read_n(init_sock, &dummy, 1);
+    raw_write_n(init_fork_pipe[1], &dummy, 1);
+    raw_close(init_fork_pipe[1]);
+}
+
+static void init_atfork_child() {
+    if (init_fork_pipe[0] < 0) return;
+    raw_close(init_fork_pipe[1]);
+
+    pid_t new_pid = raw_gettid();
+    raw_write_n(init_sock, &new_pid, sizeof(new_pid));
+    raw_close(init_sock);
+
+    char dummy;
+    raw_read_n(init_fork_pipe[0], &dummy, 1);
+    raw_close(init_fork_pipe[0]);
+}
+
+EXPORT int init_entry(void (*pthread_atfork)(void*, void*, void*)) {
     int sockets[2];
-    long r = raw_syscall4(__NR_socketpair, AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, (long) sockets);
+    long r = raw_socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets);
     if (r < 0) {
         return 1000 - r;
     }
 
-    long socket = raw_syscall3(__NR_socket, AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    long socket = raw_socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (socket < 0) {
         return 2000 - socket;
     }
 
-    r = raw_syscall3(__NR_connect, socket, (long) &init_sock_addr, sizeof(init_sock_addr));
+    r = raw_connect(socket, &init_sock_addr, sizeof(init_sock_addr));
     if (r < 0) {
         return 3000 - r;
     }
@@ -82,10 +114,16 @@ EXPORT int init_entry() {
         return 4000 - r;
     }
 
-    raw_syscall1(__NR_close, sockets[1]);
-    raw_syscall1(__NR_close, socket);
+    raw_close(sockets[1]);
+    raw_close(socket);
 
-    init_is_unhooked = true;
+    if (pthread_atfork) {
+        init_is_unhooked = false;
+        pthread_atfork(init_atfork_prepare, init_atfork_parent, init_atfork_child);
+    } else {
+        init_is_unhooked = true;
+    }
+
     init_sock = sockets[0];
     init_old_fork = 0;
 

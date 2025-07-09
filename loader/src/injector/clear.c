@@ -34,7 +34,7 @@ static bool seccomp_filters_visible() {
 }
 
 static bool has_ptrace_message() {
-    int pipefd[2];
+    int pipefd[2] = {-1};
     int status;
     pipe(pipefd);
     pid_t outer_pid = fork();
