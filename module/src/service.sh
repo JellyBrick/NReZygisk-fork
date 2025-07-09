@@ -22,6 +22,8 @@ if [ "$(which magisk)" ]; then
   done
 fi
 
+CPU_ABIS=$(getprop ro.product.cpu.abilist)
+
 if [[ "$CPU_ABIS" == *"arm64-v8a"* || "$CPU_ABIS" == *"x86_64"* ]]; then
   ./bin/zygisk-ptrace64 mount_ns_private
 else
