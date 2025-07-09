@@ -13,6 +13,10 @@ int main(int argc, char **argv) {
     mount_ns_main(argv);
 
     return 0;
+  } if (argc >= 2 && strcmp(argv[1], "mount_ns_private") == 0) {
+    mount_ns_private();
+
+    return 0;
   } else if (argc >= 2 && strcmp(argv[1], "monitor") == 0) {
     int ready_pipe[2] = {-1, -1};
     pipe(ready_pipe);

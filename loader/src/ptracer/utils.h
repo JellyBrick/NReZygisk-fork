@@ -1,6 +1,10 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
 #include <sys/ptrace.h>
 
 #include "daemon.h"
@@ -121,5 +125,9 @@ int get_program(int pid, char *buf, size_t size);
          pid != 0, fd != nullptr -> set to pid ns, give orig ns in fd
 */
 bool switch_mnt_ns(int pid, int *fd);
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
 
 #endif /* UTILS_H */

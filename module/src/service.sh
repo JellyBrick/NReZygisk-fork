@@ -22,6 +22,14 @@ if [ "$(which magisk)" ]; then
   done
 fi
 
+if [[ "$CPU_ABIS" == *"arm64-v8a"* || "$CPU_ABIS" == *"x86_64"* ]]; then
+  ./bin/zygisk-ptrace64 mount_ns_private
+else
+  # INFO: Device is 32-bit only
+
+  ./bin/zygisk-ptrace32 mount_ns_private
+fi
+
 p_s() {
   curr="$(resetprop "$1")"
   if [ -n "$curr" ] && [ "$curr" != "$2" ]; then

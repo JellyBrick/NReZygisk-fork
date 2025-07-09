@@ -34,6 +34,7 @@
 #include "solist.h"
 
 #include "art_method.hpp"
+#include "umount.hpp"
 
 using namespace std;
 
@@ -1179,38 +1180,9 @@ static int is_zygote_con() {
     return contents.find("zygote") != std::string::npos;
 }
 
-static std::string modules_dev;
 static bool is_after_reexec = false;
 
-static std::string path_dev_str(const char *path) {
-    struct stat st = {};
-
-    if (stat(path, &st) != 0) {
-        PLOGE("path_dev_str: stat(%s)", path);
-        return "?";
-    }
-
-    std::ostringstream oss;
-    oss << major(st.st_dev) << ":" << minor(st.st_dev);
-    return oss.str();
-}
-
-static std::string fd_dev_str(int fd) {
-    struct stat st = {};
-
-    if (fstat(fd, &st) != 0) {
-        PLOGE("fd_dev_str: fstat(%d)", fd);
-        return "?";
-    }
-
-    std::ostringstream oss;
-    oss << major(st.st_dev) << ":" << minor(st.st_dev);
-    return oss.str();
-}
-
 static void init_modules_dev() {
-    if (!modules_dev.empty()) return;
-
     int clean_ns = -1;
     if (is_after_reexec) {
         clean_ns = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
@@ -1221,15 +1193,7 @@ static void init_modules_dev() {
         update_mnt_ns(Mounted, false);
     }
 
-    std::string root_dev = path_dev_str("/");
-    std::string data_dev = path_dev_str("/data");
-    std::string mod_dev = path_dev_str("/data/adb/modules");
-
-    if (mod_dev != root_dev && mod_dev != data_dev && mod_dev != "?") {
-        modules_dev = mod_dev;
-    } else {
-        modules_dev = "- no separate device -";
-    }
+    umount_init_modules_dev();
 
     if (is_after_reexec) {
         if (setns(clean_ns, CLONE_NEWNS) == -1) {
@@ -1254,7 +1218,6 @@ static bool load_early_mns() {
         return false;
     }
 
-    unlink(path);
     close(early_ns);
     return true;
 }
@@ -1376,120 +1339,26 @@ void clean_mounts(char **argv, char **envp) {
     }
 }
 
-struct ToUmount {
-    std::string mountPoint;
-    int mountId;
-    std::string majorMinor;
-};
-
-static int mount_id_for_fd(int fd) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
-
-    std::ifstream info(path);
-    if (!info) {
-        PLOGE("mount_id_for_fd: open %s", path);
-        return -1;
-    }
-
-    std::string line;
-    while (std::getline(info, line)) {
-        constexpr char prefix[] = "mnt_id:";
-        if (line.compare(0, sizeof(prefix) - 1, prefix) == 0) {
-            std::istringstream iss(line.substr(sizeof(prefix) - 1));
-            int mnt_id;
-            iss >> mnt_id;
-            if (!iss.fail()) return mnt_id;
-            break;
-        }
-    }
-    LOGE("mount_id_for_fd: mnt_id not found");
-    return -1;
-}
-
 static void do_umounts() {
-    init_modules_dev();
-
-    std::ifstream mountinfo("/proc/self/mountinfo");
-    if (!mountinfo) {
-        PLOGE("do_umounts: open /proc/self/mountinfo");
-        return;
-    }
-
-    std::vector<ToUmount> umounts;
-    std::string line;
-    while (std::getline(mountinfo, line)) {
-        size_t sep = line.find(" - ");
-        if (sep == std::string::npos) continue;
-
-        std::string pre = line.substr(0, sep);
-        std::string post = line.substr(sep + 3);
-
-        std::istringstream preIss(pre);
-        std::string mountId, parentId, majorMinor, root, mountPoint;
-
-        if (!(preIss >> mountId >> parentId >> majorMinor >> root >> mountPoint)) {
-            LOGE("do_umounts: failed to parse mountinfo line part '%s'", pre.c_str());
-            continue;
-        }
-
-        std::istringstream postIss(post);
-        std::string fsType, mountSource, fsOptions;
-
-        if (!(postIss >> fsType >> mountSource)) {
-            LOGE("do_umounts: failed to parse mountinfo line part '%s'", post.c_str());
-            continue;
-        }
-
-        if (mountSource == "KSU"
-                || mountSource == "APatch"
-                || mountSource == "magisk"
-                || root.find("/adb/") != std::string::npos
-                || majorMinor == modules_dev) {
-            struct ToUmount um = {
-                    .mountPoint = mountPoint,
-                    .mountId = (int) strtol(mountId.c_str(), nullptr, 10),
-                    .majorMinor = majorMinor
-            };
-            umounts.push_back(um);
-        }
-    }
+    std::vector<ToUmount> umounts = umount_list(UmountsGetAll);
 
     for (auto it = umounts.rbegin(); it != umounts.rend(); ++it) {
-        /* INFO: These checks are to avoid issues with TOCTTOU and nested mounts */
-        int mnt_fd = open(it->mountPoint.c_str(), O_PATH | O_NOFOLLOW | O_CLOEXEC);
-        if (mnt_fd == -1) {
-            PLOGE("do_umounts: mnt_fd = open(%s)", it->mountPoint.c_str());
-            continue;
-        }
+        int mnt_fd;
+        std::string mnt_fd_path;
 
-        int mnt_fd_id = mount_id_for_fd(mnt_fd);
-        if (mnt_fd_id != it->mountId) {
-            LOGE("do_umounts: mount id expected %d vs actual %d for %s", it->mountId, mnt_fd_id, it->mountPoint.c_str());
-            close(mnt_fd);
-            continue;
-        }
+        if (!umount_get_fd(*it, mnt_fd, mnt_fd_path)) continue;
 
-        char mnt_fd_path[64];
-        snprintf(mnt_fd_path, sizeof(mnt_fd_path), "/proc/self/fd/%d", mnt_fd);
+        /* INFO: Remount it as private to prevent unwanted propagation of the umount (see man umount(2)) */
+        mount(nullptr, mnt_fd_path.c_str(), nullptr, MS_REC | MS_PRIVATE, nullptr);
 
-        std::string mnt_fd_dev = fd_dev_str(mnt_fd);
-        if (mnt_fd_dev != it->majorMinor) {
-            LOGE("do_umounts: dev expected %s vs actual %s for %s", it->majorMinor.c_str(), mnt_fd_dev.c_str(), it->mountPoint.c_str());
-            close(mnt_fd);
-            continue;
-        }
-
-        /* INFO: Now we remount it as private to prevent unwanted propagation of the umount */
-        mount(nullptr, mnt_fd_path, nullptr, MS_REC | MS_PRIVATE, nullptr);
-
-        if (umount2(mnt_fd_path, MNT_DETACH) == -1) {
+        if (umount2(mnt_fd_path.c_str(), MNT_DETACH) == -1) {
             PLOGE("do_umounts: umount2(%s, MNT_DETACH)", it->mountPoint.c_str());
         }
 
         close(mnt_fd);
     }
 }
+
 
 void hook_functions() {
     zygote_dlopen = access(TMP_PATH "/zygote_dlopen", F_OK) == 0;
