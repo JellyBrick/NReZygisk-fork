@@ -113,14 +113,13 @@ extern "C" void mount_ns_private() {
         return;
     }
 
-    for (int fd : namespace_fds) {
-        if (setns(fd, CLONE_NEWNS) != 0) {
-            close(fd);
+    for (int their_ns : namespace_fds) {
+        if (setns(their_ns, CLONE_NEWNS) != 0) {
+            close(their_ns);
             continue;
         }
 
         std::vector<ToUmount> umounts = umount_list(UmountsNoPrivate);
-        if (umounts.empty()) continue;
 
         for (auto it = umounts.rbegin(); it != umounts.rend(); ++it) {
             int mnt_fd;
@@ -135,14 +134,10 @@ extern "C" void mount_ns_private() {
             close(mnt_fd);
         }
 
-        if (setns(orig_ns, CLONE_NEWNS) != 0) {
-            close(fd);
-            close(orig_ns);
-        }
-
-        close(fd);
+        close(their_ns);
     }
 
+    setns(orig_ns, CLONE_NEWNS);
     close(orig_ns);
 }
 
