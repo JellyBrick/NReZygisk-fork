@@ -546,7 +546,8 @@ static void* init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfI
                 }
 
                 if (f && h->p_filesz > 0) {
-                    REMOTE_MMAP(start, h->p_filesz + pad, perms, flags, fd, h->p_offset & ~(align - 1));
+                    size_t sz = h->p_filesz < h->p_memsz ? h->p_filesz : h->p_memsz;
+                    REMOTE_MMAP(start, sz + pad, perms, flags, fd, h->p_offset & ~(align - 1));
                 }
             }
         }
