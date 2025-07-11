@@ -3,9 +3,11 @@
 
 #include <android/log.h>
 
+#ifndef __cplusplus
 #define bool _Bool
 #define true 1
 #define false 0
+#endif
 
 #if (defined(__LP64__) || defined(_LP64))
   #define lp_select(a, b) b

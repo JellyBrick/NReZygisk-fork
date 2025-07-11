@@ -1,15 +1,22 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#ifdef __cplusplus
+#define restrict
+extern "C" {
+#endif /* __cplusplus */
+
 #include <sys/types.h>
 
 #include "constants.h"
 #include "root_impl/common.h"
 
-#define CONCAT_(x,y) x##y
-#define CONCAT(x,y) CONCAT_(x,y)
+#define CONCAT_(x, y) x##y
+#define CONCAT(x, y) CONCAT_(x,y)
 
 #define LOG_TAG lp_select("zygiskd32", "zygiskd64")
+#define TMP_PATH "/data/adb/rezygisk"
+
 
 #define LOGI(...)                                              \
   __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__); \
@@ -112,5 +119,37 @@ int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl im
 void clear_mns_fds(void);
 
 extern char **g_argv;
+
+struct mountinfo {
+    unsigned int id;
+    unsigned int parent;
+    dev_t device;
+    const char *root;
+    const char *target;
+    const char *vfs_option;
+    struct {
+        unsigned int shared;
+        unsigned int master;
+        unsigned int propagate_from;
+    } optional;
+    const char *type;
+    const char *source;
+    const char *fs_option;
+};
+
+struct mountinfos {
+    struct mountinfo *mounts;
+    size_t length;
+};
+
+void free_mounts(struct mountinfos *restrict mounts);
+
+bool parse_mountinfo(const char *pid, struct mountinfos *restrict mounts);
+
+void sync_mns(int inner_ns);
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
 
 #endif /* UTILS_H */

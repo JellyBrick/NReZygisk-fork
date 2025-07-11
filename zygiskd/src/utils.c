@@ -458,28 +458,6 @@ void stringify_root_impl_name(struct root_impl impl, char *restrict output) {
   }
 }
 
-struct mountinfo {
-  unsigned int id;
-  unsigned int parent;
-  dev_t device;
-  const char *root;
-  const char *target;
-  const char *vfs_option;
-  struct {
-      unsigned int shared;
-      unsigned int master;
-      unsigned int propagate_from;
-  } optional;
-  const char *type;
-  const char *source;
-  const char *fs_option;
-};
-
-struct mountinfos {
-  struct mountinfo *mounts;
-  size_t length;
-};
-
 char *strndup(const char *restrict str, size_t length) {
   char *restrict copy = malloc(length + 1);
   if (copy == NULL) return NULL;
@@ -517,7 +495,9 @@ bool parse_mountinfo(const char *restrict pid, struct mountinfos *restrict mount
   char line[PATH_MAX];
   size_t i = 0;
 
-  mounts->mounts = NULL;
+  size_t capacity = 32;
+  mounts->mounts = malloc(capacity * sizeof(struct mountinfo));
+  if (!mounts->mounts) return false;
   mounts->length = 0;
 
   while (fgets(line, sizeof(line), mountinfo) != NULL) {
@@ -545,14 +525,10 @@ bool parse_mountinfo(const char *restrict pid, struct mountinfos *restrict mount
             &optional_start, &optional_end, &type_start, &type_end,
             &source_start, &source_end, &fs_option_start, &fs_option_end);
 
-    mounts->mounts = (struct mountinfo *)realloc(mounts->mounts, (i + 1) * sizeof(struct mountinfo));
-    if (!mounts->mounts) {
-      LOGE("Failed to allocate memory for mounts->mounts");
-
-      fclose(mountinfo);
-      free_mounts(mounts);
-
-      return false;
+    if (capacity < i + 1) {
+      capacity *= 2;
+      mounts->mounts = realloc(mounts->mounts, capacity * sizeof(struct mountinfo));
+      if (!mounts->mounts) return false;
     }
 
     unsigned int shared = 0;
@@ -672,7 +648,10 @@ static void set_process_name(const char *name) {
 
 int save_mns_fd(int pid, enum MountNamespaceState mns_state, struct root_impl impl) {
   if (mns_state == Clean && clean_namespace_fd != 0) return clean_namespace_fd;
-  if (mns_state == Mounted && mounted_namespace_fd != 0) return mounted_namespace_fd;
+  if (mns_state == Mounted && mounted_namespace_fd != 0) {
+    sync_mns(mounted_namespace_fd);
+    return mounted_namespace_fd;
+  }
 
   int sockets[2];
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == -1) {

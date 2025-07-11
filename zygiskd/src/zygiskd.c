@@ -42,7 +42,6 @@ enum Architecture {
 };
 
 #define PATH_MODULES_DIR "/data/adb/modules"
-#define TMP_PATH "/data/adb/rezygisk"
 #define CONTROLLER_SOCKET TMP_PATH "/init_monitor"
 #define PATH_CP_NAME TMP_PATH "/" lp_select("cp32.sock", "cp64.sock")
 #define ZYGISKD_FILE PATH_MODULES_DIR "/rezygisk/bin/zygiskd" lp_select("32", "64")

@@ -27,9 +27,10 @@ val verName: String by rootProject.extra
 val commitHash: String by rootProject.extra
 
 val baseCStandardFlags = arrayOf(
-  "-D_GNU_SOURCE", "-std=c99", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
+  "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
   "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array",
   "-Wconversion", "-Wno-fixed-enum-extension", "-Iroot_impl", "-llog",
+  "-Wno-gnu-statement-expression", "-static-libstdc++",
   "-DMIN_APATCH_VERSION=$minAPatchVersion",
   "-DMIN_KSU_VERSION=$minKsuVersion",
   "-DMAX_KSU_VERSION=$maxKsuVersion",
@@ -51,7 +52,7 @@ val CFlagsDebug = arrayOf(
   "-g", "-O0", "-DDEBUG"
 )
 
-val Files = arrayOf(
+val FilesC = arrayOf(
   "root_impl/apatch.c",
   "root_impl/common.c",
   "root_impl/kernelsu.c",
@@ -59,7 +60,11 @@ val Files = arrayOf(
   "companion.c",
   "main.c",
   "utils.c",
-  "zygiskd.c"
+  "zygiskd.c",
+)
+
+val FilesCpp = arrayOf(
+  "utils.cpp",
 )
 
 task("buildAndStrip") {
@@ -84,10 +89,10 @@ task("buildAndStrip") {
       throw UnsupportedOperationException ("System")
     }
 
-    val aarch64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "aarch64-linux-android34-clang${suffix}").toString()
-    val armv7aCompiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "armv7a-linux-androideabi34-clang${suffix}").toString()
-    val x86Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "i686-linux-android34-clang${suffix}").toString()
-    val x86_64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "x86_64-linux-android34-clang${suffix}").toString()
+    val aarch64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "aarch64-linux-android34-clang++${suffix}").toString()
+    val armv7aCompiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "armv7a-linux-androideabi34-clang++${suffix}").toString()
+    val x86Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "i686-linux-android34-clang++${suffix}").toString()
+    val x86_64Compiler = Paths.get(ndkPath, "toolchains", "llvm", "prebuilt", hostTriple, "bin", "x86_64-linux-android34-clang++${suffix}").toString()
 
     if (!Paths.get(aarch64Compiler).toFile().exists()) {
       throw Exception("aarch64 compiler not found at $aarch64Compiler")
@@ -105,7 +110,8 @@ task("buildAndStrip") {
       throw Exception("x86_64 compiler not found at $x86_64Compiler")
     }
 
-    val Files = Files.map { Paths.get(project.projectDir.toString(), "src", it).toString() }.toTypedArray()
+    val FilesC = FilesC.map { Paths.get(project.projectDir.toString(), "src", it).toString() }.toTypedArray()
+    val FilesCpp = FilesCpp.map { Paths.get(project.projectDir.toString(), "src", it).toString() }.toTypedArray()
 
     val buildDir = getLayout().getBuildDirectory().getAsFile().get()
     buildDir.mkdirs()
@@ -123,16 +129,16 @@ task("buildAndStrip") {
     val compileArgs = (if (isDebug) CFlagsDebug else CFlagsRelease) + CStandardFlags
 
     exec {
-      commandLine(aarch64Compiler, "-o", Paths.get(aarch64OutputDir.toString(), "zygiskd").toString(), *compileArgs, *Files)
+      commandLine(aarch64Compiler, "-o", Paths.get(aarch64OutputDir.toString(), "zygiskd").toString(), *compileArgs, "-xc++", *FilesCpp, "-xc", *FilesC)
     }
     exec {
-      commandLine(armv7aCompiler, "-o", Paths.get(armv7aOutputDir.toString(), "zygiskd").toString(), *compileArgs, *Files)
+      commandLine(armv7aCompiler, "-o", Paths.get(armv7aOutputDir.toString(), "zygiskd").toString(), *compileArgs, "-xc++",  *FilesCpp, "-xc", *FilesC)
     }
     exec {
-      commandLine(x86Compiler, "-o", Paths.get(x86OutputDir.toString(), "zygiskd").toString(), *compileArgs, *Files)
+      commandLine(x86Compiler, "-o", Paths.get(x86OutputDir.toString(), "zygiskd").toString(), *compileArgs, "-xc++",  *FilesCpp, "-xc", *FilesC)
     }
     exec {
-      commandLine(x86_64Compiler, "-o", Paths.get(x86_64OutputDir.toString(), "zygiskd").toString(), *compileArgs, *Files)
+      commandLine(x86_64Compiler, "-o", Paths.get(x86_64OutputDir.toString(), "zygiskd").toString(), *compileArgs, "-xc++",  *FilesCpp, "-xc", *FilesC)
     }
   }
 }

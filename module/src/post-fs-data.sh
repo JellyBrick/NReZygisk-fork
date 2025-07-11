@@ -34,9 +34,16 @@ if [ -d $TMP_PATH ]; then
   rm $TMP_PATH/init_monitor 2>/dev/null
   rm $TMP_PATH/mns32 2>/dev/null
   rm $TMP_PATH/mns64 2>/dev/null
+  rm -rf "$TMP_PATH/tmp"
 fi
 
 create_sys_perm $TMP_PATH
+create_sys_perm $TMP_PATH/tmp
+
+mkdir $TMP_PATH/tmp/copy32_d
+mkdir $TMP_PATH/tmp/copy64_d
+touch $TMP_PATH/tmp/copy32_f
+touch $TMP_PATH/tmp/copy64_f
 
 if [ -f $MODDIR/lib64/libzygisk.so ];then
   create_sys_perm $TMP_PATH/lib64
