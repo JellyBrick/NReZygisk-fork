@@ -138,9 +138,6 @@ init_syscall(pid_t pid, struct user_regs_struct *oregs, long nr, long a0, long a
     regs.uregs[5] = a5;
 #endif
 
-    /* INFO: To prevent disturbing of data we wrote to the stack */
-    regs.REG_SP -= 2048;
-
     /* INFO: We are in syscall enter stop, so set syscall number and run sycall */
     if (!init_set_syscall_reg(pid, &regs, nr)) {
         PLOGE("init_syscall: init_set_syscall_reg(%d, &regs, %ld)", pid, nr);
@@ -484,7 +481,7 @@ static void init_elf_size(ElfImg *img, size_t *out_size, size_t *out_min) {
         ElfW(Phdr) *h = &phdr[i];
         if (h->p_type == PT_LOAD) {
             size_t start = h->p_vaddr & ~(align - 1);
-            size_t end = h->p_vaddr + h->p_memsz;
+            size_t end = (h->p_vaddr + h->p_memsz + align - 1) & ~(align - 1);
 
             if (start < min_addr) min_addr = start;
             if (end > max_addr) max_addr = end;
@@ -511,7 +508,7 @@ static void* init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfI
 #define REMOTE_MMAP(a, b, c, d, e, f) REMOTE_SYSCALL(SYS_mmap2, a, b, c, d, e, (f) / 4096)
 #endif
 
-    long remote_path = oregs->REG_SP + 256;
+    size_t remote_path = REMOTE_MMAP(0, PATH_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, 0, 0);
     write_proc(pid, remote_path, img->elf, strlen(img->elf) + 1);
 
     long fd = REMOTE_SYSCALL(SYS_openat, AT_FDCWD, remote_path, O_RDONLY | O_CLOEXEC, 0, 0, 0);
@@ -520,9 +517,11 @@ static void* init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfI
     size_t so_min;
     init_elf_size(img, &so_size, &so_min);
 
-    size_t so_addr = REMOTE_MMAP(0, so_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, 0, 0);
-
     size_t align = sysconf(_SC_PAGE_SIZE);
+    size_t so_addr = REMOTE_MMAP(0, so_size + align * 4, PROT_NONE, MAP_PRIVATE | MAP_ANON, 0, 0);
+
+    write_proc(pid, remote_path, "zygisk", strlen("zygisk") + 1);
+    REMOTE_SYSCALL(SYS_prctl, PR_SET_VMA, PR_SET_VMA_ANON_NAME, so_addr, so_size + align * 4, remote_path, 0);
 
     ElfW(Phdr) *phdr = (ElfW(Phdr) *)((uintptr_t)img->header + img->header->e_phoff);
     for (int f = 0; f <= 1; ++f) {
@@ -553,6 +552,7 @@ static void* init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfI
         }
     }
 
+    REMOTE_SYSCALL(SYS_munmap, remote_path, PATH_MAX, 0, 0, 0, 0);
     REMOTE_SYSCALL(SYS_close, fd, 0, 0, 0, 0, 0);
     return (void *) so_addr;
 }

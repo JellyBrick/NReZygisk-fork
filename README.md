@@ -28,6 +28,8 @@ with the appropriate name. The options are:
   and `Abnormal Environment` of Native Test. (But note that `Abnormal Environment` in NT can also be caused
   by other detections, one is described below in Limitations.)
   - In some cases, this option might cause some mounts to not be present due to how it affects mount propagation.
+  - In some cases, this option might not be able to mitigate these detections, particularly on Magisk 
+  where some mounts are placed too early.
   - This option requires `clean_zygote` to be enabled for proper operation.
   - This option is disabled by default.
 - `inject_init`: Instead of using `PTRACE_O_TRACEFORK`, inject code into `init` (pid 1) that allows
