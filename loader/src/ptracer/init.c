@@ -508,7 +508,7 @@ static void* init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfI
 #define REMOTE_MMAP(a, b, c, d, e, f) REMOTE_SYSCALL(SYS_mmap2, a, b, c, d, e, (f) / 4096)
 #endif
 
-    size_t remote_path = REMOTE_MMAP(0, PATH_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, 0, 0);
+    size_t remote_path = REMOTE_MMAP(0, PATH_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     write_proc(pid, remote_path, img->elf, strlen(img->elf) + 1);
 
     long fd = REMOTE_SYSCALL(SYS_openat, AT_FDCWD, remote_path, O_RDONLY | O_CLOEXEC, 0, 0, 0);
@@ -518,7 +518,7 @@ static void* init_elf_map_remote(pid_t pid, struct user_regs_struct *oregs, ElfI
     init_elf_size(img, &so_size, &so_min);
 
     size_t align = sysconf(_SC_PAGE_SIZE);
-    size_t so_addr = REMOTE_MMAP(0, so_size + align * 4, PROT_NONE, MAP_PRIVATE | MAP_ANON, 0, 0);
+    size_t so_addr = REMOTE_MMAP(0, so_size + align * 4, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
 
     write_proc(pid, remote_path, "zygisk", strlen("zygisk") + 1);
     REMOTE_SYSCALL(SYS_prctl, PR_SET_VMA, PR_SET_VMA_ANON_NAME, so_addr, so_size + align * 4, remote_path, 0);
