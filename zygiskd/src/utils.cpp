@@ -6,59 +6,23 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <unordered_set>
+#include <algorithm>
 
 #include "utils.h"
+#include "utils.hpp"
 
-std::string last_mountinfo;
-
-static bool read_file(const char* path, std::string& data) {
-    data = "";
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd == -1) return false;
-
-    char buffer[4096];
-    ssize_t n;
-
-    while ((n = TEMP_FAILURE_RETRY(read(fd, buffer, sizeof(buffer)))) > 0) {
-        data.append(buffer, static_cast<std::size_t>(n));
-    }
-
-    close(fd);
-    return n == 0;
-}
-
-static bool check_file(const char *path, std::string &expected) {
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd == -1) return false;
-
-    char buffer[4096];
-    ssize_t n;
-    size_t offset = 0;
-
-    while ((n = TEMP_FAILURE_RETRY(read(fd, buffer, sizeof(buffer)))) > 0) {
-        if (offset + (size_t) n > expected.size() ||
-            memcmp(buffer, expected.data() + offset, (size_t) n) != 0) {
-            close(fd);
-            return false;
-        }
-        offset += (size_t) n;
-    }
-
-    close(fd);
-    return n == 0 && offset == expected.size();
-}
+MappedBuffer mountinfo_buf;
+MappedBuffer mountinfo_prev;
 
 void sync_mns(int inner_ns) {
     if (access(TMP_PATH "/private_mounts", F_OK) != 0) return;
 
-    if (!last_mountinfo.empty() && check_file("/proc/1/mountinfo", last_mountinfo)) {
-        return;
+    if (mountinfo_buf.file_read("/proc/1/mounts", mountinfo_prev.size)) {
+        if (mountinfo_buf == mountinfo_prev) return;
+        std::swap(mountinfo_prev, mountinfo_buf);
     }
-    read_file("/proc/1/mountinfo", last_mountinfo);
 
     struct mountinfos outer_mi;
     if (!parse_mountinfo("1", &outer_mi)) return;
@@ -120,4 +84,7 @@ void sync_mns(int inner_ns) {
         outer_mp.insert(mountpoint);
         close(fd);
     }
+
+    free_mounts(&inner_mi);
+    free_mounts(&outer_mi);
 }

@@ -29,6 +29,7 @@ val commitHash: String by rootProject.extra
 val baseCStandardFlags = arrayOf(
   "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
   "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array",
+  "-I../loader/src/include",
   "-Wconversion", "-Wno-fixed-enum-extension", "-Iroot_impl", "-llog",
   "-Wno-gnu-statement-expression", "-static-libstdc++",
   "-DMIN_APATCH_VERSION=$minAPatchVersion",
@@ -65,6 +66,7 @@ val FilesC = arrayOf(
 
 val FilesCpp = arrayOf(
   "utils.cpp",
+  "../../loader/src/common/utils.cpp"
 )
 
 task("buildAndStrip") {
@@ -75,7 +77,7 @@ task("buildAndStrip") {
   doLast {
     val ndkPath = getLatestNDKPath()
 
-	var hostTriple = ""
+    var hostTriple = ""
     var suffix = ""
 
     if (OperatingSystem.current().isWindows) {

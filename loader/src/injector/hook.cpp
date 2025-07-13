@@ -35,6 +35,7 @@
 
 #include "art_method.hpp"
 #include "umount.hpp"
+#include "utils.hpp"
 
 using namespace std;
 
@@ -163,7 +164,9 @@ ret new_##func(__VA_ARGS__)
 
 // Skip actual fork and return cached result if applicable
 DCL_HOOK_FUNC(int, fork) {
-    return (g_ctx && g_ctx->pid >= 0) ? g_ctx->pid : old_fork();
+    if (g_ctx && g_ctx->pid >= 0) return g_ctx->pid;
+    do_umounts();
+    return old_fork();
 }
 
 bool update_mnt_ns(enum mount_namespace_state mns_state, bool dry_run) {
@@ -663,8 +666,8 @@ void ZygiskContext::fork_pre() {
              First block SIGCHLD, unblock after original fork is done.
     */
     sigmask(SIG_BLOCK, SIGCHLD);
+    do_umounts();
     pid = old_fork();
-    if (pid != 0 && clean_zygote) do_umounts();
     if (pid != 0 || flags[SKIP_FD_SANITIZATION])
         return;
 
@@ -1340,7 +1343,18 @@ void clean_mounts(char **argv, char **envp) {
     }
 }
 
+static MappedBuffer mountinfo_buf;
+static MappedBuffer mountinfo_prev;
+
 static void do_umounts() {
+    if (!clean_zygote) return;
+    if (gettid() != getpid()) return;
+
+    if (mountinfo_buf.file_read("/proc/self/mounts",mountinfo_prev.size)) {
+        if (mountinfo_buf == mountinfo_prev) return;
+        std::swap(mountinfo_prev, mountinfo_buf);
+    }
+
     std::vector<ToUmount> umounts = umount_list(UmountsGetAll);
 
     for (auto it = umounts.rbegin(); it != umounts.rend(); ++it) {
@@ -1445,4 +1459,6 @@ static void unhook_functions() {
     std::vector<lsplt::MapInfo>().swap(cached_map_infos);
     list<ZygiskModule>().swap(modules);
     std::string().swap(modules_dev);
+    mountinfo_buf.unmap();
+    mountinfo_prev.unmap();
 }
