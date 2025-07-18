@@ -36,6 +36,7 @@
 #include "art_method.hpp"
 #include "umount.hpp"
 #include "utils.hpp"
+#include "rules.hpp"
 
 using namespace std;
 
@@ -816,19 +817,36 @@ void ZygiskContext::app_specialize_pre() {
     flags[APP_SPECIALIZE] = true;
     mns_stage = MNS_PRE_APP;
 
-    info_flags = rezygiskd_get_process_flags(g_ctx->args.app->uid, (const char *const)process);
+    auto app_uid = (uid_t) g_ctx->args.app->uid;
+    info_flags = rezygiskd_get_process_flags(app_uid, (const char *const)process);
+
+    const char *data_dir_p = args.app->app_data_dir ? env->GetStringUTFChars(args.app->app_data_dir, nullptr) : nullptr;
+    std::string data_dir(data_dir_p ? data_dir_p : "");
+    std::string cmdline(process);
 
     /* INFO: Get main app UID of isolated processes through app_data_dir */
-    if ((info_flags & (PROCESS_ON_DENYLIST | PROCESS_ROOT_IS_MAGISK)) == 0 && args.app->app_data_dir) {
-        const char *data_dir = env->GetStringUTFChars(args.app->app_data_dir, nullptr);
-        if (data_dir) {
-            struct stat st = {};
-            if (stat(data_dir, &st) == 0 && st.st_uid != (uid_t)g_ctx->args.app->uid) {
-                uint32_t main_flags = rezygiskd_get_process_flags(st.st_uid, (const char *const)process);
-                info_flags |= (main_flags & PROCESS_ON_DENYLIST);
-            }
-            env->ReleaseStringUTFChars(args.app->app_data_dir, data_dir);
+    if ((info_flags & PROCESS_ON_DENYLIST) == 0 && !data_dir.empty()) {
+        struct stat st = {};
+        if (stat(data_dir.c_str(), &st) == 0 && st.st_uid != app_uid) {
+            app_uid = st.st_uid;
+            uint32_t main_flags = rezygiskd_get_process_flags(st.st_uid, (const char *const)process);
+            info_flags |= (main_flags & PROCESS_ON_DENYLIST);
         }
+    }
+
+    if ((info_flags & (PROCESS_GRANTED_ROOT | PROCESS_IS_MANAGER)) == 0) {
+        if (rules_should_deny(app_uid, cmdline, data_dir,
+                              (info_flags & PROCESS_ON_DENYLIST) != 0)) {
+            info_flags |= PROCESS_ON_DENYLIST;
+        } else {
+            info_flags &= ~PROCESS_ON_DENYLIST;
+        }
+    } else {
+        info_flags &= ~PROCESS_ON_DENYLIST;
+    }
+
+    if (data_dir_p) {
+        env->ReleaseStringUTFChars(args.app->app_data_dir, data_dir_p);
     }
 
      if (info_flags & PROCESS_IS_FIRST_STARTED) {
@@ -966,7 +984,15 @@ void ZygiskContext::nativeForkSystemServer_pre() {
     mns_stage = MNS_PRE_APP;
 
     if (clean_zygote) {
-        info_flags = rezygiskd_get_process_flags(1000, "system_server");
+        const std::string proc = "system_server";
+        info_flags = rezygiskd_get_process_flags(1000, proc.c_str());
+
+        if (rules_should_deny(1000, proc, proc, (info_flags & PROCESS_ON_DENYLIST) != 0)) {
+            info_flags |= PROCESS_ON_DENYLIST;
+        } else {
+            info_flags &= ~PROCESS_ON_DENYLIST;
+        }
+
         if ((info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST) {
             flags[DO_REVERT_UNMOUNT] = true;
         }
@@ -1282,11 +1308,14 @@ static MappedBuffer mountinfo_prev;
 
 static void do_umounts() {
     if (!clean_zygote) return;
+    if (mns_stage == MNS_PRE_APP || mns_stage == MNS_APP) return;
     if (gettid() != getpid()) return;
 
-    if (mountinfo_buf.file_read("/proc/self/mounts",mountinfo_prev.size)) {
-        if (mountinfo_buf == mountinfo_prev) return;
-        std::swap(mountinfo_prev, mountinfo_buf);
+    if (!rules_reload()) {
+        if (mountinfo_buf.file_read("/proc/self/mounts", mountinfo_prev.size)) {
+            if (mountinfo_buf == mountinfo_prev) return;
+            std::swap(mountinfo_prev, mountinfo_buf);
+        }
     }
 
     std::vector<ToUmount> umounts = umount_list(UmountsGetAll);
@@ -1395,4 +1424,5 @@ static void unhook_functions() {
     std::string().swap(modules_dev);
     mountinfo_buf.unmap();
     mountinfo_prev.unmap();
+    rules_unload();
 }

@@ -12,6 +12,7 @@
 
 #include "logging.h"
 #include "umount.hpp"
+#include "rules.hpp"
 
 std::string modules_dev;
 
@@ -125,7 +126,8 @@ std::vector<ToUmount> umount_list(umount_filter filter) {
             || mountSource == "APatch"
             || mountSource == "magisk"
             || root.find("/adb/") != std::string::npos
-            || majorMinor == modules_dev) {
+            || majorMinor == modules_dev
+            || rules_should_umount(mountPoint)) {
             struct ToUmount um = {
                     .mountPoint = mountPoint,
                     .mountId = (int) strtol(mountId.c_str(), nullptr, 10),
@@ -147,7 +149,7 @@ bool umount_get_fd(ToUmount &u, int &mnt_fd, std::string &fd_path) {
     }
 
     int mnt_fd_id = mount_id_for_fd(mnt_fd);
-    if (mnt_fd_id != u.mountId) {
+    if (mnt_fd_id != u.mountId && mnt_fd_id != -1) {
         LOGE("umount_get_fd: mount id expected %d vs actual %d for %s", u.mountId, mnt_fd_id, u.mountPoint.c_str());
         close(mnt_fd);
         return false;
@@ -157,7 +159,7 @@ bool umount_get_fd(ToUmount &u, int &mnt_fd, std::string &fd_path) {
     snprintf(mnt_fd_path, sizeof(mnt_fd_path), "/proc/self/fd/%d", mnt_fd);
 
     std::string mnt_fd_dev = fd_dev_str(mnt_fd);
-    if (mnt_fd_dev != u.majorMinor) {
+    if (mnt_fd_dev != u.majorMinor && mnt_fd_dev != "?") {
         LOGE("umount_get_fd: dev expected %s vs actual %s for %s", u.majorMinor.c_str(), mnt_fd_dev.c_str(), u.mountPoint.c_str());
         close(mnt_fd);
         return false;
