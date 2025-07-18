@@ -14,7 +14,7 @@
 #include "umount.hpp"
 #include "rules.hpp"
 
-std::string modules_dev;
+char modules_dev[64] = {0};
 
 static std::string path_dev_str(const char *path) {
     struct stat st = {};
@@ -43,16 +43,16 @@ static std::string fd_dev_str(int fd) {
 }
 
 void umount_init_modules_dev() {
-    if (!modules_dev.empty()) return;
+    if (modules_dev[0]) return;
 
     std::string root_dev = path_dev_str("/");
     std::string data_dev = path_dev_str("/data");
     std::string mod_dev = path_dev_str("/data/adb/modules");
 
     if (mod_dev != root_dev && mod_dev != data_dev && mod_dev != "?") {
-        modules_dev = mod_dev;
+        strcpy(modules_dev, mod_dev.c_str());
     } else {
-        modules_dev = "- no separate device -";
+        strcpy(modules_dev, "- no separate device -");
     }
 }
 

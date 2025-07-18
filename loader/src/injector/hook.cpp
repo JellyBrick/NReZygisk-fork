@@ -152,8 +152,8 @@ bool clean_zygote = false;
 bool modules_loaded = false;
 bool zygote_dlopen = false;
 enum mns_stages mns_stage = MNS_INIT;
-std::vector<lsplt::MapInfo> cached_map_infos = {};
-list<ZygiskModule> modules;
+std::vector<lsplt::MapInfo> *cached_map_infos = nullptr;
+list<ZygiskModule> *modules = nullptr;
 
 } // namespace
 
@@ -339,7 +339,7 @@ DCL_HOOK_FUNC(char *, strdup, const char *s) {
   if (strcmp(s, "com.android.internal.os.ZygoteInit") == 0) {
       LOGV("strdup %s", s);
       initialize_jni_hook();
-      cached_map_infos = lsplt::MapInfo::Scan();
+      *cached_map_infos = lsplt::MapInfo::Scan();
       LOGD("cached_map_infos updated");
     }
 
@@ -425,7 +425,7 @@ void initialize_jni_hook() {
     auto get_created_java_vms = reinterpret_cast<jint (*)(JavaVM **, jsize, jsize *)>(
             dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs"));
     if (!get_created_java_vms) {
-        for (auto &map: cached_map_infos) {
+        for (auto &map: *cached_map_infos) {
             if (!map.path.ends_with("/libnativehelper.so")) continue;
             void *h = dlopen(map.path.data(), RTLD_LAZY);
             if (!h) {
@@ -506,7 +506,7 @@ bool ZygiskModule::RegisterModuleImpl(ApiTable *api, long *module) {
         api->v2.getFlags = [](auto) { return ZygiskModule::getFlags(); };
     }
     if (api_version >= 4) {
-        api->v4.pltHookCommit = []() { return lsplt::CommitHook(cached_map_infos); };
+        api->v4.pltHookCommit = []() { return lsplt::CommitHook(*cached_map_infos); };
         api->v4.pltHookRegister = [](dev_t dev, ino_t inode, const char *symbol, void *fn, void **backup) {
             if (dev == 0 || inode == 0 || symbol == nullptr || fn == nullptr)
                 return;
@@ -542,7 +542,7 @@ void ZygiskContext::plt_hook_exclude(const char *regex, const char *symbol) {
 void ZygiskContext::plt_hook_process_regex() {
     if (register_info.empty())
         return;
-    for (auto &map : cached_map_infos) {
+    for (auto &map : *cached_map_infos) {
         if (map.offset != 0 || !map.is_private || !(map.perms & PROT_READ)) continue;
         for (auto &reg: register_info) {
             if (regexec(&reg.regex, map.path.data(), 0, nullptr, 0) != 0)
@@ -572,7 +572,7 @@ bool ZygiskContext::plt_hook_commit() {
         pthread_mutex_unlock(&hook_info_lock);
     }
 
-    return lsplt::CommitHook(cached_map_infos);
+    return lsplt::CommitHook(*cached_map_infos);
 }
 
 
@@ -766,7 +766,7 @@ bool load_modules_only() {
       continue;
     }
 
-    modules.emplace_back(i, handle, entry);
+    modules->emplace_back(i, handle, entry);
   }
 
   free_modules(&ms);
@@ -775,7 +775,7 @@ bool load_modules_only() {
 
 /* Zygisksu changed: Load module fds */
 void ZygiskContext::run_modules_pre() {
-  for (auto &m : modules) {
+  for (auto &m : *modules) {
     m.onLoad(env);
 
     if (flags[APP_SPECIALIZE]) m.preAppSpecialize(args.app);
@@ -787,28 +787,28 @@ void ZygiskContext::run_modules_post() {
     flags[POST_SPECIALIZE] = true;
 
     size_t modules_unloaded = 0;
-    for (const auto &m : modules) {
+    for (const auto &m : *modules) {
         if (flags[APP_SPECIALIZE]) m.postAppSpecialize(args.app);
         else if (flags[SERVER_FORK_AND_SPECIALIZE]) m.postServerSpecialize(args.server);
 
         if (m.tryUnload()) modules_unloaded++;
     }
 
-    if (modules.size() > 0) {
-        LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
+    if (modules->size() > 0) {
+        LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules->size());
 
         /* INFO: While Variable Length Arrays (VLAs) aren't usually
                    recommended due to the ease of using too much of the
                    stack, this should be fine since it should not be
                    possible to exhaust the stack with only a few addresses. */
-        void *module_addrs[modules.size() * sizeof(void *)];
+        void *module_addrs[modules->size() * sizeof(void *)];
 
         size_t i = 0;
-        for (const auto &m : modules) {
+        for (const auto &m : *modules) {
             module_addrs[i++] = m.getEntry();
         }
 
-        clean_trace("/data/adb", module_addrs, modules.size(), modules.size(), modules_unloaded);
+        clean_trace("/data/adb", module_addrs, modules->size(), modules->size(), modules_unloaded);
     }
 }
 
@@ -1061,7 +1061,7 @@ ZygiskContext::~ZygiskContext() {
     jni_hook_list = nullptr;
 
     // Strip out all API function pointers
-    for (auto &m : modules) {
+    for (auto &m : *modules) {
         m.clearApi();
     }
 
@@ -1070,7 +1070,7 @@ ZygiskContext::~ZygiskContext() {
 
 } // namespace
 
-static bool hook_commit(std::vector<lsplt::MapInfo> &map_infos = cached_map_infos) {
+static bool hook_commit(std::vector<lsplt::MapInfo> &map_infos = *cached_map_infos) {
     if (lsplt::CommitHook(map_infos)) {
         return true;
     } else {
@@ -1346,8 +1346,12 @@ void hook_functions() {
     ino_t android_runtime_inode = 0;
     dev_t android_runtime_dev = 0;
 
-    cached_map_infos = lsplt::MapInfo::Scan();
-    for (auto &map : cached_map_infos) {
+    cached_map_infos = new std::vector<lsplt::MapInfo>();
+    *cached_map_infos = lsplt::MapInfo::Scan();
+
+    modules = new list<ZygiskModule>();
+
+    for (auto &map : *cached_map_infos) {
         if (map.path.ends_with("libandroid_runtime.so")) {
             android_runtime_inode = map.inode;
             android_runtime_dev = map.dev;
@@ -1378,8 +1382,8 @@ static void hook_unloader() {
     ino_t art_inode = 0;
     dev_t art_dev = 0;
 
-    cached_map_infos = lsplt::MapInfo::Scan();
-    for (auto &map : cached_map_infos) {
+    *cached_map_infos = lsplt::MapInfo::Scan();
+    for (auto &map : *cached_map_infos) {
         if (map.path.ends_with("/libart.so")) {
             art_inode = map.inode;
             art_dev = map.dev;
@@ -1419,10 +1423,16 @@ static void unhook_functions() {
         should_unmap_zygisk = false;
     }
 
-    std::vector<lsplt::MapInfo>().swap(cached_map_infos);
-    list<ZygiskModule>().swap(modules);
-    std::string().swap(modules_dev);
+    delete cached_map_infos;
+    cached_map_infos = nullptr;
+    delete modules;
+    modules = nullptr;
+    memset(modules_dev, 0, sizeof(modules_dev));
     mountinfo_buf.unmap();
     mountinfo_prev.unmap();
     rules_unload();
+}
+
+extern "C" int __cxa_atexit(void (*)(void*), void*, void*) {
+    return 0;
 }

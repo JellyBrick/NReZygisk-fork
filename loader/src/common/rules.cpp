@@ -22,13 +22,10 @@ static timespec last_mtime = {};
 
 static const char *rules_txt = TMP_PATH "/rules.txt";
 
-static const std::unordered_set<std::string> never_umount = {
-        "/", "/proc", "/sys", "/dev", "/data", "/system_ext", "/product", "/vendor", "/mnt"
-};
-
-static std::unordered_set<std::string> umount_rules;
-static std::vector<std::string> umount_prefix_rules;
-static std::vector<AppRule> app_rules;
+static std::unordered_set<std::string> *never_umount = nullptr;
+static std::unordered_set<std::string> *umount_rules = nullptr;
+static std::vector<std::string> *umount_prefix_rules = nullptr;
+static std::vector<AppRule> *app_rules = nullptr;
 
 static inline std::string_view trim(std::string_view sv) {
     auto first = sv.find_first_not_of(" \t\n\r\f\v");
@@ -108,9 +105,27 @@ bool rules_reload() {
     }
     last_mtime = st.st_mtim;
 
-    umount_rules.clear();
-    umount_prefix_rules.clear();
-    app_rules.clear();
+    if (umount_rules) umount_rules->clear();
+    else umount_rules = new std::unordered_set<std::string>();
+
+    if (umount_prefix_rules) umount_prefix_rules->clear();
+    else umount_prefix_rules = new std::vector<std::string>();
+
+    if (app_rules) app_rules->clear();
+    else app_rules = new std::vector<AppRule>();
+
+    if (!never_umount) {
+        never_umount = new std::unordered_set<std::string>();
+        never_umount->insert("/");
+        never_umount->insert("/proc");
+        never_umount->insert("/sys");
+        never_umount->insert("/dev");
+        never_umount->insert("/data");
+        never_umount->insert("/system_ext");
+        never_umount->insert("/product");
+        never_umount->insert("/vendor");
+        never_umount->insert("/mnt");
+    }
 
     std::ifstream txt(rules_txt);
     if (!txt) return false;
@@ -122,14 +137,14 @@ bool rules_reload() {
 
         if (line.starts_with('/')) {
             if (line.ends_with('*')) {
-                umount_prefix_rules.push_back(line.substr(0, line.size() - 1));
-            } else if (!never_umount.contains(line)) {
-                umount_rules.insert(line);
+                umount_prefix_rules->push_back(line.substr(0, line.size() - 1));
+            } else if (!never_umount->contains(line)) {
+                umount_rules->insert(line);
             }
             continue;
         }
 
-        app_rules.push_back(parse_app_rule(std::move(line)));
+        app_rules->push_back(parse_app_rule(std::move(line)));
     }
 
     return true;
@@ -137,17 +152,24 @@ bool rules_reload() {
 
 void rules_unload() {
     last_mtime = {};
-    std::unordered_set<std::string>().swap(umount_rules);
-    std::vector<std::string>().swap(umount_prefix_rules);
-    std::vector<AppRule>().swap(app_rules);
+    delete never_umount;
+    never_umount = nullptr;
+    delete umount_rules;
+    umount_rules = nullptr;
+    delete umount_prefix_rules;
+    umount_prefix_rules = nullptr;
+    delete app_rules;
+    app_rules = nullptr;
 }
 
 bool rules_should_deny(uid_t uid, const std::string &process, const std::string &data_dir,
                        bool on_denylist) {
+    if (!app_rules) return on_denylist;
+    if (uid == 0) return false;
+
     std::string app = basename(data_dir);
 
-    if (uid == 0) return false;
-    for (AppRule &rule: app_rules) {
+    for (AppRule &rule: *app_rules) {
         if (rule.uid_from || rule.uid_to) {
             if (uid >= rule.uid_from && uid <= rule.uid_to) {
                 return rule.deny;
@@ -168,10 +190,11 @@ bool rules_should_deny(uid_t uid, const std::string &process, const std::string 
 }
 
 bool rules_should_umount(std::string &mountpoint) {
-    if (umount_rules.contains(mountpoint)) return true;
-    for (std::string &prefix: umount_prefix_rules) {
+    if (!umount_rules || !umount_prefix_rules) return false;
+    if (umount_rules->contains(mountpoint)) return true;
+    for (std::string &prefix: *umount_prefix_rules) {
         if (mountpoint.starts_with(prefix)) {
-            return !never_umount.contains(mountpoint);
+            return !never_umount->contains(mountpoint);
         }
     }
     return false;
