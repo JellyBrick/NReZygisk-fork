@@ -376,8 +376,8 @@ void zygiskd_start(char *restrict argv[]) {
   while (1) {
     int client_fd = accept(socket_fd, NULL, NULL);
     if (client_fd == -1) {
+      if (errno == EINTR) continue;
       LOGE("accept: %s\n", strerror(errno));
-
       return;
     }
 
