@@ -29,9 +29,8 @@ val commitHash: String by rootProject.extra
 val baseCStandardFlags = arrayOf(
   "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
   "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array",
-  "-Wno-c23-extensions", "-Wno-c++20-attribute-extensions",
   "-I../loader/src/include",
-  "-Wconversion", "-Wno-bit-int-extension", "-Iroot_impl", "-llog",
+  "-Wconversion", "-Wno-fixed-enum-extension", "-Iroot_impl", "-llog",
   "-Wno-gnu-statement-expression", "-static-libstdc++",
   "-DMIN_APATCH_VERSION=$minAPatchVersion",
   "-DMIN_KSU_VERSION=$minKsuVersion",
@@ -47,7 +46,7 @@ else
 val CStandardFlags = baseCStandardFlags + zkVersionFlag
 
 val CFlagsRelease = arrayOf(
-  "-Wl,--strip-all", "-flto=thin", "-O3", "-ffast-math"
+  "-Wl,--strip-all", "-flto=thin", "-Ofast"
 )
 
 val CFlagsDebug = arrayOf(
