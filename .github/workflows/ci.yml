@@ -1,9 +1,8 @@
 name: Untrusted CI
 
 on:
-  pull_request:
-  merge_group:
-  workflow_dispatch:
+  push:
+    branches: [ fork ]
 
 jobs:
   build:
