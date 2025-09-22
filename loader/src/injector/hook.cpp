@@ -304,6 +304,53 @@ DCL_HOOK_FUNC(int, umount2, const char *target, int flags) {
     return ret;
 }
 
+struct FileDescriptorInfo {
+    const int fd;
+    const struct stat stat;
+    const std::string file_path;
+    const int open_flags;
+    const int fd_flags;
+    const int fs_flags;
+    const off_t offset;
+    const bool is_sock;
+};
+
+/* INFO: This hook avoids that umounted overlays made by root modules lead to Zygote
+           to Abort its operation as it cannot open anymore.
+
+   SOURCES:
+     - https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-14.0.0_r1/core/jni/fd_utils.cpp#346
+     - https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-14.0.0_r1/core/jni/fd_utils.cpp#544
+     - https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-14.0.0_r1/core/jni/com_android_internal_os_Zygote.cpp#2329
+*/
+DCL_HOOK_FUNC(void, _ZNK18FileDescriptorInfo14ReopenOrDetachERKNSt3__18functionIFvNS0_12basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEEEEE, void *_this, void *fail_fn) {
+    const int fd = *(const int *)((uintptr_t)_this + offsetof(FileDescriptorInfo, fd));
+    const std::string *file_path = (const std::string *)((uintptr_t)_this + offsetof(FileDescriptorInfo, file_path));
+    const int open_flags = *(const int *)((uintptr_t)_this + offsetof(FileDescriptorInfo, open_flags));
+    const bool is_sock = *(const bool *)((uintptr_t)_this + offsetof(FileDescriptorInfo, is_sock));
+
+    int new_fd;
+
+    if (is_sock)
+        goto bypass_fd_check;
+
+    if (strncmp(file_path->c_str(), "/memfd:/boot-image-methods.art", strlen("/memfd:/boot-image-methods.art")) == 0)
+        goto bypass_fd_check;
+
+    new_fd = TEMP_FAILURE_RETRY(open(file_path->c_str(), open_flags));
+    close(new_fd);
+    if (new_fd == -1) {
+        LOGD("Failed to open file %s, detaching it", file_path->c_str());
+
+        close(fd);
+
+        return;
+    }
+
+    bypass_fd_check:
+        old__ZNK18FileDescriptorInfo14ReopenOrDetachERKNSt3__18functionIFvNS0_12basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEEEEE(_this, fail_fn);
+}
+
 // We cannot directly call `dlclose` to unload ourselves, otherwise when `dlclose` returns,
 // it will return to our code which has been unmapped, causing segmentation fault.
 // Instead, we hook `pthread_attr_setstacksize` which will be called when VM daemon threads start.
@@ -796,20 +843,11 @@ void ZygiskContext::run_modules_post() {
     }
 
     if (modules->size() > 0) {
-        LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules->size());
+        LOGD("Modules unloaded: %zu/%zu", modules_unloaded, modules->size());
 
-        /* INFO: While Variable Length Arrays (VLAs) aren't usually
-                   recommended due to the ease of using too much of the
-                   stack, this should be fine since it should not be
-                   possible to exhaust the stack with only a few addresses. */
-        void *module_addrs[modules->size() * sizeof(void *)];
+        solist_reset_counters(modules->size(), modules_unloaded);
 
-        size_t i = 0;
-        for (const auto &m : *modules) {
-            module_addrs[i++] = m.getEntry();
-        }
-
-        clean_trace("/data/adb", module_addrs, modules->size(), modules->size(), modules_unloaded);
+        LOGD("Returned global counters to their original values");
     }
 }
 
@@ -1094,22 +1132,6 @@ static void hook_register(dev_t dev, ino_t inode, const char *symbol, void *new_
 #define PLT_HOOK_REGISTER(DEV, INODE, NAME) \
     PLT_HOOK_REGISTER_SYM(DEV, INODE, #NAME, NAME)
 
-/* INFO: module_addrs_length is always the same as "load" */
-void clean_trace(const char *path, void **module_addrs, size_t module_addrs_length, size_t load, size_t unload) {
-    LOGD("cleaning trace for path %s", path);
-
-    if (load > 0 || unload > 0) solist_reset_counters(load, unload);
-
-    LOGD("Dropping solist record for %s", path);
-
-    for (size_t i = 0; i < module_addrs_length; i++) {
-        bool has_dropped = solist_drop_so_path(module_addrs[i]);
-        if (!has_dropped) continue;
-
-        LOGD("Dropped solist record for %p", module_addrs[i]);
-    }
-}
-
 static bool set_exec_con(const char *con) {
     FILE *fp = fopen("/proc/self/attr/exec", "w");
     if (!fp) {
@@ -1347,6 +1369,8 @@ void hook_functions() {
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, property_get);
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, mount);
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, umount2);
+    PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, _ZNK18FileDescriptorInfo14ReopenOrDetachERKNSt3__18functionIFvNS0_12basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEEEEE);
+    
     hook_commit();
 
     // Remove unhooked methods
