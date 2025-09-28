@@ -29,7 +29,6 @@ val commitHash: String by rootProject.extra
 val baseCStandardFlags = arrayOf(
   "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
   "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array",
-  "-Wno-c++20-attribute-extensions",
   "-I../loader/src/include",
   "-Wconversion", "-Wno-fixed-enum-extension", "-Iroot_impl", "-llog",
   "-Wno-gnu-statement-expression", "-static-libstdc++",
@@ -67,8 +66,7 @@ val FilesC = arrayOf(
 
 val FilesCpp = arrayOf(
   "utils.cpp",
-  "../../loader/src/common/utils.cpp",
-  "atexit.cpp"
+  "../../loader/src/common/utils.cpp"
 )
 
 task("buildAndStrip") {
