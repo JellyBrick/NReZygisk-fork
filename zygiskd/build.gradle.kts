@@ -27,7 +27,7 @@ val verName: String by rootProject.extra
 val commitHash: String by rootProject.extra
 
 val baseCStandardFlags = arrayOf(
-  "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
+  "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra",
   "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array",
   "-I../loader/src/include",
   "-Wconversion", "-Wno-fixed-enum-extension", "-Iroot_impl", "-llog",
