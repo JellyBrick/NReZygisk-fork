@@ -358,8 +358,11 @@ void rezygiskd_listener_callback() {
       case SYSTEM_SERVER_STARTED: {
         LOGD("system server started, mounting prop");
 
-        if (mount(PROP_PATH, "/data/adb/modules/rezygisk/module.prop", NULL, MS_BIND, NULL) == -1) {
-          PLOGE("failed to mount prop");
+        if (access(TMP_PATH "/no_mount_prop", F_OK) != 0) {
+          const char *target = "/data/adb/modules/rezygisk/module.prop";
+          if (mount(PROP_PATH, target, NULL, MS_BIND, NULL) == -1) {
+            PLOGE("failed to mount prop");
+          }
         }
 
         break;

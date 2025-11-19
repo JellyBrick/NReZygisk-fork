@@ -198,3 +198,9 @@ if [ ! -f "/data/adb/nrezygisk/no_clean_zygote" ]; then
   mkdir -p /data/adb/nrezygisk
   touch /data/adb/nrezygisk/clean_zygote
 fi
+
+if [ ! -f "/data/adb/nrezygisk/no_zygote_dlopen" ]; then
+  ui_print "- Enabled /data/adb/nrezygisk/zygote_dlopen"
+  mkdir -p /data/adb/nrezygisk
+  touch /data/adb/nrezygisk/zygote_dlopen
+fi
