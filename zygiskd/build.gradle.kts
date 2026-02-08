@@ -27,7 +27,7 @@ val verName: String by rootProject.extra
 val commitHash: String by rootProject.extra
 
 val baseCStandardFlags = arrayOf(
-  "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra", "-Werror",
+  "-D_GNU_SOURCE", "-Wpedantic", "-Wall", "-Wextra",
   "-Wformat", "-Wuninitialized", "-Wshadow", "-Wno-zero-length-array",
   "-I../loader/src/include",
   "-Wconversion", "-Wno-fixed-enum-extension", "-Iroot_impl", "-llog",
@@ -46,7 +46,7 @@ else
 val CStandardFlags = baseCStandardFlags + zkVersionFlag
 
 val CFlagsRelease = arrayOf(
-  "-Wl,--strip-all", "-flto=thin", "-Ofast"
+  "-Wl,--strip-all", "-flto=thin", "-O3"
 )
 
 val CFlagsDebug = arrayOf(

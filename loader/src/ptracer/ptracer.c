@@ -388,12 +388,10 @@ bool inject_on_main(int pid, const char *lib_path, bool is_first) {
     /* call injector entry(start_addr, block_size, path) */
     args[0] = (uintptr_t)start_addr;
     args[1] = block_size;
-    str = push_string(pid, &regs, rezygiskd_get_path());
-    args[2] = (uintptr_t)str;
-    args[3] = (uintptr_t)(is_first ? argv : 0);
-    args[4] = (uintptr_t)(is_first ? envp : 0);
+    args[2] = (uintptr_t)(is_first ? argv : 0);
+    args[3] = (uintptr_t)(is_first ? envp : 0);
 
-    uintptr_t call = remote_call(pid, &regs, injector_entry, (uintptr_t)libc_return_addr, args, 5);
+    uintptr_t call = remote_call(pid, &regs, injector_entry, (uintptr_t)libc_return_addr, args, 4);
     free(args);
 
     if (call == (uintptr_t ) execve) {

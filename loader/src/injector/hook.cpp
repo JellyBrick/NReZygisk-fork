@@ -842,24 +842,23 @@ void ZygiskContext::run_modules_post() {
         if (flags[APP_SPECIALIZE]) m.postAppSpecialize(args.app);
         else if (flags[SERVER_FORK_AND_SPECIALIZE]) m.postServerSpecialize(args.server);
 
+        /* INFO: If module is unloaded by dlclose, there's no need to
+                   hide it from soinfo manually. */
         if (m.tryUnload()) modules_unloaded++;
+        else {
+            bool has_dropped = solist_drop_so_path(m.getEntry(), false);
+            if (!has_dropped) continue;
+
+            LOGD("Dropped solist record for %p", m.getEntry());
+        }
     }
 
     if (modules->size() > 0) {
-        LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules->size());
+        LOGD("Modules unloaded: %zu/%zu", modules_unloaded, modules->size());
 
-        /* INFO: While Variable Length Arrays (VLAs) aren't usually
-                   recommended due to the ease of using too much of the
-                   stack, this should be fine since it should not be
-                   possible to exhaust the stack with only a few addresses. */
-        void *module_addrs[modules->size() * sizeof(void *)];
+        solist_reset_counters(modules->size(), modules_unloaded);
 
-        size_t i = 0;
-        for (const auto &m : *modules) {
-            module_addrs[i++] = m.getEntry();
-        }
-
-        clean_trace("/data/adb", module_addrs, modules->size(), modules->size(), modules_unloaded);
+        LOGD("Returned global counters to their original values");
     }
 }
 
@@ -924,70 +923,69 @@ void ZygiskContext::app_specialize_pre() {
                    if Zygisk is enabled.
         */
         setenv("ZYGISK_ENABLED", "1", 1);
-        if (clean_zygote) update_mnt_ns(Mounted, false);
-    } else {
-        if ((info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST) {
-            flags[DO_REVERT_UNMOUNT] = true;
-        }
-
-        if (clean_zygote) {
-            if (is_mounted()) {
-                update_mnt_ns(Mounted, false);
-            }
-        }
-
-        /* INFO: Because we load directly from the file, we need to do it before we umount
-                   the mounts, or else it won't have access to /data/adb anymore.
-        */
-        if (!load_modules_only()) {
-            LOGE("Failed to load modules");
-
-            return;
-        }
-
-        /* INFO: Modules only have two "start off" points from Zygisk, preSpecialize and
-                   postSpecialize. In preSpecialize, the process still has privileged
-                   permissions, and therefore can execute mount/umount/setns functions.
-                   If we update the mount namespace AFTER executing them, any mounts made
-                   will be lost, and the process will not have access to them anymore.
-
-                 In postSpecialize, while still could have its mounts modified with the
-                   assistance of a Zygisk companion, it will already have the mount
-                   namespace switched by then, so there won't be issues.
-
-                 Knowing this, we update the mns before execution, so that they can still
-                   make changes to mounts in DenyListed processes without being reverted.
-        */
-        bool in_denylist = (info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST;
-        if (in_denylist) {
-            if (!clean_zygote) update_mnt_ns(Clean, false);
-        }
-
-
-        if (!clean_zygote) {
-            FILE *fp = setmntent("/proc/mounts", "r");
-            if (fp) {
-                while (getmntent(fp));
-                endmntent(fp);
-            }
-        }
-
-        /* INFO: Executed after setns to ensure a module can update the mounts of an
-                   application without worrying about it being overwritten by setns.
-        */
-        run_modules_pre();
-
-        /* INFO: The modules may request that although the process is NOT in
-                   the DenyList, it has its mount namespace switched to the clean
-                   one.
-
-                 So to ensure this behavior happens, we must also check after the
-                   modules are loaded and executed, so that the modules can have
-                   the chance to request it.
-        */
-        // if (!in_denylist && flags[DO_REVERT_UNMOUNT])
-        //    update_mnt_ns(Clean, false);
     }
+
+    if ((info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST) {
+        flags[DO_REVERT_UNMOUNT] = true;
+    }
+
+    if (clean_zygote) {
+        if (is_mounted()) {
+            update_mnt_ns(Mounted, false);
+        }
+    }
+
+    /* INFO: Because we load directly from the file, we need to do it before we umount
+               the mounts, or else it won't have access to /data/adb anymore.
+    */
+    if (!load_modules_only()) {
+        LOGE("Failed to load modules");
+        return;
+    }
+
+    /* INFO: Modules only have two "start off" points from Zygisk, preSpecialize and
+                postSpecialize. In preSpecialize, the process still has privileged
+                permissions, and therefore can execute mount/umount/setns functions.
+                If we update the mount namespace AFTER executing them, any mounts made
+                will be lost, and the process will not have access to them anymore.
+
+                In postSpecialize, while still could have its mounts modified with the
+                assistance of a Zygisk companion, it will already have the mount
+                namespace switched by then, so there won't be issues.
+
+                Knowing this, we update the mns before execution, so that they can still
+                make changes to mounts in DenyListed processes without being reverted.
+    */
+    bool in_denylist = (info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST;
+    if (in_denylist) {
+        if (!clean_zygote) update_mnt_ns(Clean, false);
+    }
+
+
+    if (!clean_zygote) {
+        FILE *fp = setmntent("/proc/mounts", "r");
+        if (fp) {
+            while (getmntent(fp));
+            endmntent(fp);
+        }
+    }
+
+    /* INFO: Executed after setns to ensure a module can update the mounts of an
+                application without worrying about it being overwritten by setns.
+    */
+    run_modules_pre();
+
+    /* INFO: The modules may request that although the process is NOT in
+                the DenyList, it has its mount namespace switched to the clean
+                one.
+
+                So to ensure this behavior happens, we must also check after the
+                modules are loaded and executed, so that the modules can have
+                the chance to request it.
+    */
+    // if (!in_denylist && flags[DO_REVERT_UNMOUNT])
+    //    update_mnt_ns(Clean, false);
+
 }
 
 
@@ -1143,22 +1141,6 @@ static void hook_register(dev_t dev, ino_t inode, const char *symbol, void *new_
 
 #define PLT_HOOK_REGISTER(DEV, INODE, NAME) \
     PLT_HOOK_REGISTER_SYM(DEV, INODE, #NAME, NAME)
-
-/* INFO: module_addrs_length is always the same as "load" */
-void clean_trace(const char *path, void **module_addrs, size_t module_addrs_length, size_t load, size_t unload) {
-    LOGD("cleaning trace for path %s", path);
-
-    if (load > 0 || unload > 0) solist_reset_counters(load, unload);
-
-    LOGD("Dropping solist record for %s", path);
-
-    for (size_t i = 0; i < module_addrs_length; i++) {
-        bool has_dropped = solist_drop_so_path(module_addrs[i]);
-        if (!has_dropped) continue;
-
-        LOGD("Dropped solist record for %p", module_addrs[i]);
-    }
-}
 
 static bool set_exec_con(const char *con) {
     FILE *fp = fopen("/proc/self/attr/exec", "w");

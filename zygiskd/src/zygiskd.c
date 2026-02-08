@@ -200,7 +200,7 @@ static int spawn_companion(char *restrict argv[], char *restrict name, int lib_f
 
         return -1;
       }
-      
+
       uint8_t response = 0;
       ssize_t ret = read_uint8_t(daemon_fd, &response);
       if (ret <= 0) {
@@ -703,4 +703,5 @@ void zygiskd_start(char *restrict argv[]) {
 
   close(socket_fd);
   free_modules(&context);
+  root_impl_cleanup();
 }

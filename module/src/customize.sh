@@ -4,7 +4,6 @@ SKIPUNZIP=1
 DEBUG=@DEBUG@
 MIN_KSU_VERSION=@MIN_KSU_VERSION@
 MIN_KSUD_VERSION=@MIN_KSUD_VERSION@
-MAX_KSU_VERSION=@MAX_KSU_VERSION@
 MIN_MAGISK_VERSION=@MIN_MAGISK_VERSION@
 MIN_APATCH_VERSION=@MIN_APATCH_VERSION@
 
@@ -15,12 +14,6 @@ if [ "$BOOTMODE" ] && [ "$KSU" ]; then
     ui_print "*********************************************************"
     ui_print "! KernelSU version is too old!"
     ui_print "! Please update KernelSU to latest version"
-    abort    "*********************************************************"
-  elif [ "$KSU_KERNEL_VER_CODE" -ge "$MAX_KSU_VERSION" ]; then
-    ui_print "*********************************************************"
-    ui_print "! KernelSU version abnormal!"
-    ui_print "! Please integrate KernelSU into your kernel"
-    ui_print "  as submodule instead of copying the source code"
     abort    "*********************************************************"
   fi
   if ! [ "$KSU_VER_CODE" ] || [ "$KSU_VER_CODE" -lt "$MIN_KSUD_VERSION" ]; then
@@ -204,4 +197,10 @@ if [ ! -f "/data/adb/nrezygisk/no_clean_zygote" ]; then
   ui_print "- Enabled /data/adb/nrezygisk/clean_zygote"
   mkdir -p /data/adb/nrezygisk
   touch /data/adb/nrezygisk/clean_zygote
+fi
+
+if [ ! -f "/data/adb/nrezygisk/no_zygote_dlopen" ]; then
+  ui_print "- Enabled /data/adb/nrezygisk/zygote_dlopen"
+  mkdir -p /data/adb/nrezygisk
+  touch /data/adb/nrezygisk/zygote_dlopen
 fi

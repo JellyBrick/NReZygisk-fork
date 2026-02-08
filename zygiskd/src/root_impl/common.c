@@ -128,3 +128,7 @@ bool uid_is_manager(uid_t uid) {
     }
   }
 }
+
+void root_impl_cleanup(void) {
+  if (impl.impl == KernelSU) ksu_cleanup();
+}

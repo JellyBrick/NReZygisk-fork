@@ -205,6 +205,13 @@ static void init_to_sys_entry(pid_t pid, struct user_regs_struct *oregs) {
 
     /* INFO: The ip points to the insn after the syscall insn, move it back to the syscall insn */
     oregs->REG_IP -= SYSCALL_LEN(oregs);
+
+    /* INFO: Linux replaces rax with -ENOSYS, restore it */
+#if defined(__x86_64__)
+    oregs->rax = oregs->orig_rax;
+#elif defined(__i386__)
+    oregs->eax = oregs->orig_eax;
+#endif
 }
 
 /* INFO: Returns the address of the PLT entry of the given function (in init address space) */
@@ -568,7 +575,7 @@ void init_inject() {
 
     /* INFO: Create file that disables init injection, we will delete it if things go well */
     FILE *disable_file = fopen(disable_path, "a");
-    if (!fopen(disable_path, "a")) {
+    if (!disable_file) {
         PLOGE("init_inject: fopen(%s)", disable_path);
         return;
     }

@@ -46,11 +46,14 @@ us to monitor `fork()` calls of `init` and attach to its child processes.
   - If this option is enabled and injecting fails, the `bad_init_inject` file will be created,
   which disables the `inject_init` option to avoid bootloops.
   - This option is disabled by default.
+- `no_mount_prop`: Don't mount `module.prop`.
+  - If enabled, the status won't be visible in the manager. WebUI can be used to check the status.
+  - This option is disabled by default.
 - `zygote_dlopen`: Load modules in Zygote rather than only after forking.
   - This might save a little bit of CPU and RAM, and it allows modules to run code in Zygote.
   - It might break modules that don't expect this to happen.
   - This option is not related to hiding root.
-  - This option is disabled by default.
+  - This option is enabled by default.
 
 In addition, it is possible to change denylisted apps and unmounted mountpoints using the file `/data/adb/nrezygisk/rules.txt`:
 - Lines starting with `/` are interpreted as mountpoints to unmount, e.g. `/data/adb/*`
